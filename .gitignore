@@ -10,3 +10,4 @@ DerivedData/
 python/.venv/
 python/**/__pycache__/
 python/**/*.pyc
+.run/

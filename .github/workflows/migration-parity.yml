@@ -1,0 +1,61 @@
+name: Migration Parity
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/swift-metal-migration
+    paths:
+      - "Sources/**"
+      - "python/worker/**"
+      - "python/tests/**"
+      - "docs/migration/**"
+      - "Package.swift"
+
+jobs:
+  parity:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: python -m pip install -r python/requirements.txt
+
+      - name: Swift build
+        run: swift build
+
+      - name: Run migration parity unittest (with Swift parity enabled)
+        env:
+          GEOARTLAB_RUN_SWIFT_PARITY: "1"
+        run: python -m unittest python/tests/test_migration_parity.py -v
+
+      - name: Generate parity report
+        run: python python/tests/generate_migration_parity_report.py --seeds 42,1337 --sizes 512x512,1024x1024
+
+      - name: Print parity summary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("docs/migration/parity/latest.json").read_text())
+          summary = report["summary"]
+          print("strict_pass:", summary["all_strict_pass"])
+          print("statistical_pass:", summary["all_statistical_pass"])
+          print("passed_scenarios:", summary["passed_scenarios"])
+          print("failed_scenarios:", summary["failed_scenarios"])
+          PY
+
+      - name: Upload parity report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-parity-report
+          path: |
+            docs/migration/parity/latest.json
+            docs/migration/parity/latest.md

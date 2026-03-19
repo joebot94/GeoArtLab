@@ -1,17 +1,32 @@
+import AppKit
 import SwiftUI
 
-@main
-struct GeoArtLabApp: App {
-    @StateObject private var appState = AppState()
+@MainActor
+final class GeoArtLabApplication: NSObject, NSApplicationDelegate {
+    private let appState = AppState()
+    private var mainWindow: NSWindow?
 
-    var body: some Scene {
-        WindowGroup("GeoArtLab") {
-            MainWindowView(appState: appState)
-                .frame(minWidth: 1260, minHeight: 820)
-                .onAppear {
-                    appState.start()
-                }
-        }
-        .defaultSize(width: 1440, height: 900)
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+
+        let rootView = MainWindowView(appState: appState)
+            .frame(minWidth: 1260, minHeight: 820)
+
+        let hosting = NSHostingController(rootView: rootView)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+
+        window.center()
+        window.title = "GeoArtLab"
+        window.contentViewController = hosting
+        window.makeKeyAndOrderFront(nil)
+
+        self.mainWindow = window
+        appState.start()
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

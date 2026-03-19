@@ -8,12 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from core import (
+    ensure_output_root,
+    export_animation,
     export_piece,
     generate_seed_sequence,
     normalize_canvas,
     normalize_render_params,
+    render_animation_preview,
     render_preview,
-    ensure_output_root,
 )
 
 DEFAULT_OUTPUT_ROOT = str(Path.home() / "JBT" / "geo_art_lab")
@@ -26,6 +28,7 @@ class ExportCancelledError(RuntimeError):
 @dataclass
 class WorkerState:
     active_export_request_id: str | None = None
+    active_animation_request_id: str | None = None
     cancel_active_export: bool = False
 
 
@@ -73,6 +76,8 @@ def handle_hello(request_id: str | None) -> None:
             "capabilities": [
                 "render_preview",
                 "export_batch",
+                "render_animation_preview",
+                "export_animation",
                 "cancel",
                 "ping",
             ],
@@ -86,9 +91,14 @@ def handle_ping(request_id: str | None) -> None:
 
 def handle_cancel(request_id: str | None, payload: dict[str, Any]) -> None:
     target_request_id = payload.get("target_request_id")
-    if target_request_id and target_request_id == state.active_export_request_id:
+
+    if target_request_id and (
+        target_request_id == state.active_export_request_id or target_request_id == state.active_animation_request_id
+    ):
         state.cancel_active_export = True
-    elif target_request_id is None and state.active_export_request_id is not None:
+    elif target_request_id is None and (
+        state.active_export_request_id is not None or state.active_animation_request_id is not None
+    ):
         state.cancel_active_export = True
 
     send_success(request_id, "ready", {"cancel_requested": bool(state.cancel_active_export)})
@@ -107,6 +117,23 @@ def handle_render_preview(request_id: str | None, payload: dict[str, Any]) -> No
     send_success(request_id, "preview_ready", result)
 
 
+def handle_render_animation_preview(request_id: str | None, payload: dict[str, Any]) -> None:
+    params = payload.get("params") or {}
+    canvas = payload.get("canvas") or {}
+    timeline = payload.get("timeline") or {}
+    frame = int(payload.get("frame", 0))
+    output_root = payload.get("output_root") or DEFAULT_OUTPUT_ROOT
+
+    result = render_animation_preview(
+        output_root=output_root,
+        render_params=params,
+        canvas=canvas,
+        timeline=timeline,
+        frame=frame,
+    )
+    send_success(request_id, "animation_preview_ready", result)
+
+
 def handle_export_batch(request_id: str | None, payload: dict[str, Any]) -> None:
     if request_id is None:
         raise ValueError("export_batch requires request_id")
@@ -118,7 +145,8 @@ def handle_export_batch(request_id: str | None, payload: dict[str, Any]) -> None
     output_root = payload.get("output_root") or DEFAULT_OUTPUT_ROOT
 
     normalized_render = normalize_render_params(render_params)
-    normalized_canvas = normalize_canvas(canvas)
+    export_max = int(normalized_render["canvas_meta"].get("export_max_dim", 16384))
+    normalized_canvas = normalize_canvas(canvas, max_dimension=export_max)
     out_root = ensure_output_root(output_root)
     seeds = generate_seed_sequence(base_seed, repeats)
 
@@ -181,6 +209,52 @@ def handle_export_batch(request_id: str | None, payload: dict[str, Any]) -> None
         state.cancel_active_export = False
 
 
+def handle_export_animation(request_id: str | None, payload: dict[str, Any]) -> None:
+    if request_id is None:
+        raise ValueError("export_animation requires request_id")
+
+    render_params = payload.get("render") or {}
+    canvas = payload.get("canvas") or {}
+    timeline = payload.get("timeline") or {}
+    animation_name = payload.get("animation_name")
+    output_root = payload.get("output_root") or DEFAULT_OUTPUT_ROOT
+
+    state.active_animation_request_id = request_id
+    state.cancel_active_export = False
+
+    def progress(completed: int, total: int, frame: int, frame_name: str) -> None:
+        if state.cancel_active_export:
+            raise ExportCancelledError("Export cancelled by client")
+
+        send_message(
+            {
+                "type": "animation_export_progress",
+                "ok": True,
+                "payload": {
+                    "request_id": request_id,
+                    "completed": completed,
+                    "total": total,
+                    "frame": frame,
+                    "frame_name": frame_name,
+                },
+            }
+        )
+
+    try:
+        result = export_animation(
+            output_root=output_root,
+            render_params=render_params,
+            canvas=canvas,
+            timeline=timeline,
+            animation_name=animation_name,
+            progress_cb=progress,
+        )
+        send_success(request_id, "animation_export_complete", result)
+    finally:
+        state.active_animation_request_id = None
+        state.cancel_active_export = False
+
+
 def handle_request(request: dict[str, Any]) -> None:
     request_id = request.get("request_id")
     message_type = request.get("type")
@@ -205,8 +279,14 @@ def handle_request(request: dict[str, Any]) -> None:
     if message_type == "render_preview":
         handle_render_preview(request_id, payload)
         return
+    if message_type == "render_animation_preview":
+        handle_render_animation_preview(request_id, payload)
+        return
     if message_type == "export_batch":
         handle_export_batch(request_id, payload)
+        return
+    if message_type == "export_animation":
+        handle_export_animation(request_id, payload)
         return
 
     raise ValueError(f"Unsupported request type: {message_type}")

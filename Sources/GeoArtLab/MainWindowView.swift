@@ -2,6 +2,13 @@ import AppKit
 import SwiftUI
 
 struct MainWindowView: View {
+    private enum PreviewMode: String, CaseIterable, Identifiable {
+        case staticImage = "Static"
+        case animation = "Animation"
+
+        var id: String { rawValue }
+    }
+
     private enum RegionAxis {
         case xMin
         case xMax
@@ -11,13 +18,31 @@ struct MainWindowView: View {
 
     @ObservedObject var appState: AppState
 
+    @AppStorage("geoartlab.section.generator.open") private var generatorOpen = true
+    @AppStorage("geoartlab.section.shapes.open") private var shapesOpen = true
+    @AppStorage("geoartlab.section.color.open") private var colorOpen = false
+    @AppStorage("geoartlab.section.canvas.open") private var canvasOpen = false
+    @AppStorage("geoartlab.section.animation.open") private var animationOpen = false
+
+    @State private var selectedShapeKind: ShapeKind = .circle
+    @State private var previewMode: PreviewMode = .staticImage
+    @State private var showTimeline = false
+    @State private var showExportSheet = false
+
     var body: some View {
         HStack(spacing: 0) {
-            controlsPanel
+            sidebar
+                .frame(width: 220)
+
             Divider()
-            previewPanel
+
+            previewPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
             Divider()
-            exportPanel
+
+            outputPane
+                .frame(width: 280)
         }
         .onChange(of: appState.params) { _ in
             appState.schedulePreview()
@@ -25,209 +50,309 @@ struct MainWindowView: View {
         .onChange(of: appState.canvas) { _ in
             appState.schedulePreview()
         }
+        .onChange(of: appState.animation) { _ in
+            appState.scheduleAnimationPreview()
+        }
+        .sheet(isPresented: $showTimeline) {
+            TimelineEditorView(appState: appState, isPresented: $showTimeline)
+        }
+        .sheet(isPresented: $showExportSheet) {
+            ExportSheetView(appState: appState, isPresented: $showExportSheet)
+        }
     }
 
-    private var controlsPanel: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                sectionTitle("Generator")
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    DisclosureGroup(isExpanded: $generatorOpen) {
+                        generatorSection
+                            .padding(.top, 6)
+                    } label: {
+                        sectionLabel("Generator")
+                    }
 
-                Text("Total Shapes: \(appState.params.shapeCounts.total)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    DisclosureGroup(isExpanded: $shapesOpen) {
+                        shapesSection
+                            .padding(.top, 6)
+                    } label: {
+                        sectionLabel("Shapes")
+                    }
 
-                ForEach(ShapeKind.allCases) { kind in
-                    GroupBox(kind.title) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Stepper("Count: \(appState.params.shapeCounts[kind])", value: shapeCountBinding(kind), in: 0...300)
+                    DisclosureGroup(isExpanded: $colorOpen) {
+                        colorSection
+                            .padding(.top, 6)
+                    } label: {
+                        sectionLabel("Color")
+                    }
 
-                            labeledSlider(
-                                title: "Angle Min",
-                                value: angleBinding(kind, isMin: true),
-                                range: 0...360,
-                                step: 1,
-                                format: "%.0f°"
-                            )
+                    DisclosureGroup(isExpanded: $canvasOpen) {
+                        canvasSection
+                            .padding(.top, 6)
+                    } label: {
+                        sectionLabel("Canvas")
+                    }
 
-                            labeledSlider(
-                                title: "Angle Max",
-                                value: angleBinding(kind, isMin: false),
-                                range: 0...360,
-                                step: 1,
-                                format: "%.0f°"
-                            )
-
-                            labeledSlider(
-                                title: "Region X Min",
-                                value: regionBinding(kind, axis: .xMin),
-                                range: 0...1,
-                                step: 0.01,
-                                format: "%.2f"
-                            )
-
-                            labeledSlider(
-                                title: "Region X Max",
-                                value: regionBinding(kind, axis: .xMax),
-                                range: 0...1,
-                                step: 0.01,
-                                format: "%.2f"
-                            )
-
-                            labeledSlider(
-                                title: "Region Y Min",
-                                value: regionBinding(kind, axis: .yMin),
-                                range: 0...1,
-                                step: 0.01,
-                                format: "%.2f"
-                            )
-
-                            labeledSlider(
-                                title: "Region Y Max",
-                                value: regionBinding(kind, axis: .yMax),
-                                range: 0...1,
-                                step: 0.01,
-                                format: "%.2f"
-                            )
-                        }
+                    DisclosureGroup(isExpanded: $animationOpen) {
+                        animationSection
+                            .padding(.top, 6)
+                    } label: {
+                        sectionLabel("Animation")
                     }
                 }
+                .padding(10)
+            }
 
-                Stepper("Symmetry: \(appState.params.symmetry)", value: $appState.params.symmetry, in: 1...12)
+            Divider()
 
-                labeledSlider(
-                    title: "Rotation",
-                    value: $appState.params.rotation,
-                    range: 0...360,
-                    step: 1,
-                    format: "%.0f°"
-                )
-
-                labeledSlider(
-                    title: "Scale Range",
-                    value: $appState.params.scaleRange,
-                    range: 0.1...1.0,
-                    step: 0.01,
-                    format: "%.2f"
-                )
-
-                labeledSlider(
-                    title: "Stroke Width",
-                    value: $appState.params.strokeWidth,
-                    range: 0.5...18,
-                    step: 0.5,
-                    format: "%.1f"
-                )
-
-                labeledSlider(
-                    title: "Fill Ratio",
-                    value: $appState.params.fillRatio,
-                    range: 0...1,
-                    step: 0.01,
-                    format: "%.2f"
-                )
-
-                Picker("Palette", selection: $appState.params.palette) {
-                    ForEach(PalettePreset.allCases) { palette in
-                        Text(palette.title).tag(palette)
-                    }
+            VStack(alignment: .leading, spacing: 8) {
+                Button("Reset All") {
+                    appState.resetAll()
                 }
+                .buttonStyle(.bordered)
 
-                Picker("Color Mode", selection: $appState.params.colorMode) {
-                    ForEach(ColorMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
+                Button("Save Preset") {
+                    _ = appState.savePreset()
                 }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("s", modifiers: [.command])
 
-                if appState.params.palette == .custom {
-                    TextField("Custom colors (#RRGGBB,#RRGGBB,...)", text: $appState.params.customPaletteText)
-                        .textFieldStyle(.roundedBorder)
+                Button("Open Timeline") {
+                    showTimeline = true
                 }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut("t", modifiers: [.command])
 
-                Picker("Background", selection: $appState.params.backgroundStyle) {
-                    ForEach(BackgroundStyle.allCases) { style in
-                        Text(style.title).tag(style)
-                    }
+                Button("Export...") {
+                    showExportSheet = true
                 }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("e", modifiers: [.command])
+            }
+            .padding(10)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
 
-                Stepper("Seed: \(appState.params.seed)", value: $appState.params.seed, in: 0...1_000_000)
-
-                Divider().padding(.vertical, 4)
-                sectionTitle("Canvas")
-
-                Toggle("Lock Aspect Ratio", isOn: $appState.canvas.lockRatio)
-
-                if appState.canvas.lockRatio {
-                    Picker("Ratio", selection: $appState.canvas.ratioPreset) {
-                        ForEach(AspectRatioPreset.allCases) { preset in
-                            Text(preset.title).tag(preset)
-                        }
-                    }
-                    Stepper("Long Edge: \(appState.canvas.clampedLongEdge)", value: $appState.canvas.longEdgePx, in: 512...4096)
-                    Text("Computed: \(appState.canvas.resolvedWidth) × \(appState.canvas.resolvedHeight)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Stepper("Width: \(appState.canvas.manualWidth)", value: $appState.canvas.manualWidth, in: 64...4096)
-                    Stepper("Height: \(appState.canvas.manualHeight)", value: $appState.canvas.manualHeight, in: 64...4096)
-                }
-
-                Divider().padding(.vertical, 4)
-                sectionTitle("Batch")
-
-                Stepper("Base Seed: \(appState.baseSeed)", value: $appState.baseSeed, in: 0...1_000_000)
-                Stepper("Repeats: \(appState.repeats)", value: $appState.repeats, in: 1...512)
-
-                Text("Output Root")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                TextField("~/JBT/geo_art_lab", text: $appState.outputRoot)
-                    .textFieldStyle(.roundedBorder)
-
-                HStack(spacing: 10) {
-                    Button("Render Now") {
-                        appState.requestPreview()
-                    }
-                    Button("Ping Worker") {
-                        appState.pingWorker()
-                    }
-                    Button("Export Batch") {
-                        appState.exportBatch()
-                    }
-                    .keyboardShortcut("e", modifiers: [.command])
-                    .disabled(appState.isExporting)
+    private var generatorSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            compactIntField(title: "Total Shapes", value: $appState.requestedTotalShapes, range: 0...1200)
+            compactIntField(title: "Seed", value: $appState.params.seed, range: 0...1_000_000)
+            compactIntSlider(title: "Symmetry Count", value: $appState.params.symmetry, range: 1...12)
+                .disabled(appState.params.symmetryMode == .none)
+            compactPicker("Symmetry Mode", selection: $appState.params.symmetryMode) {
+                ForEach(SymmetryMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
                 }
             }
-            .padding(16)
+
+            HStack(spacing: 6) {
+                Button("Random") {
+                    appState.randomizeSeed()
+                }
+                .buttonStyle(.bordered)
+
+                Button("Rebalance") {
+                    appState.rebalanceShapeCountsToRequestedTotal()
+                }
+                .buttonStyle(.bordered)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Circles: \(appState.params.shapeCounts.circle)")
+                Text("Triangles: \(appState.params.shapeCounts.triangle)")
+                Text("Rectangles: \(appState.params.shapeCounts.rectangle)")
+                Text("Lines: \(appState.params.shapeCounts.line)")
+                if appState.params.symmetryMode == .none {
+                    Text("Symmetry Off: random placement")
+                } else {
+                    Text("Instances x\(appState.params.symmetry)")
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
-        .frame(minWidth: 360, idealWidth: 400, maxWidth: 420)
     }
 
-    private var previewPanel: some View {
+    private var shapesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+                ForEach(ShapeKind.allCases) { kind in
+                    Button {
+                        selectedShapeKind = kind
+                    } label: {
+                        Text(kind.title)
+                            .font(.caption2.weight(.semibold))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                            .background(
+                                selectedShapeKind == kind ?
+                                    Color.orange.opacity(0.2) :
+                                    Color.secondary.opacity(0.08)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            compactIntField(title: "Count", value: shapeCountBinding(selectedShapeKind), range: 0...300)
+            compactDoubleSlider(title: "Fill Ratio", value: shapeFillRatioBinding(selectedShapeKind), range: 0...1, step: 0.01, precision: 2)
+            compactDoubleSlider(title: "Angle Min", value: angleBinding(selectedShapeKind, isMin: true), range: 0...360, step: 1, precision: 0)
+            compactDoubleSlider(title: "Angle Max", value: angleBinding(selectedShapeKind, isMin: false), range: 0...360, step: 1, precision: 0)
+            compactDoubleSlider(title: "Region X Min", value: regionBinding(selectedShapeKind, axis: .xMin), range: 0...1, step: 0.01, precision: 2)
+            compactDoubleSlider(title: "Region X Max", value: regionBinding(selectedShapeKind, axis: .xMax), range: 0...1, step: 0.01, precision: 2)
+            compactDoubleSlider(title: "Region Y Min", value: regionBinding(selectedShapeKind, axis: .yMin), range: 0...1, step: 0.01, precision: 2)
+            compactDoubleSlider(title: "Region Y Max", value: regionBinding(selectedShapeKind, axis: .yMax), range: 0...1, step: 0.01, precision: 2)
+        }
+    }
+
+    private var colorSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            compactPicker("Palette", selection: $appState.params.palette) {
+                ForEach(PalettePreset.allCases) { preset in
+                    Text(preset.title).tag(preset)
+                }
+            }
+
+            compactPicker("Color Mode", selection: $appState.params.colorMode) {
+                ForEach(ColorMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+
+            compactPicker("Background", selection: $appState.params.backgroundStyle) {
+                ForEach(BackgroundStyle.allCases) { background in
+                    Text(background.title).tag(background)
+                }
+            }
+
+            compactDoubleSlider(title: "Global Fill", value: $appState.params.fillRatio, range: 0...1, step: 0.01, precision: 2)
+
+            Button("Apply Global Fill To Shapes") {
+                appState.applyGlobalFillRatioToAllShapes()
+            }
+            .buttonStyle(.bordered)
+
+            if appState.params.palette == .custom {
+                TextField("#RRGGBB,#RRGGBB,#RRGGBB", text: $appState.params.customPaletteText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+            }
+        }
+    }
+
+    private var canvasSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            compactPicker("Ratio", selection: $appState.canvas.ratioPreset) {
+                ForEach(AspectRatioPreset.allCases) { ratio in
+                    Text(ratio.title).tag(ratio)
+                }
+            }
+            .onChange(of: appState.canvas.ratioPreset) { _ in
+                appState.applyRatioLock()
+            }
+
+            compactPicker("Resolution", selection: $appState.canvas.resolutionPreset) {
+                ForEach(ResolutionPreset.allCases) { preset in
+                    Text(preset.title).tag(preset)
+                }
+            }
+            .onChange(of: appState.canvas.resolutionPreset) { _ in
+                appState.applyResolutionPreset()
+            }
+
+            Toggle("Lock Ratio", isOn: $appState.canvas.lockRatio)
+                .font(.caption)
+                .onChange(of: appState.canvas.lockRatio) { _ in
+                    appState.applyRatioLock()
+                }
+
+            compactPicker("Drive", selection: $appState.canvas.ratioDrivingDimension) {
+                ForEach(RatioDrivingDimension.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .onChange(of: appState.canvas.ratioDrivingDimension) { _ in
+                appState.applyRatioLock()
+            }
+
+            compactIntField(title: "Width", value: $appState.canvas.manualWidth, range: 64...16384)
+            compactIntField(title: "Height", value: $appState.canvas.manualHeight, range: 64...16384)
+
+            Text("Preview \(appState.canvas.resolvedWidthPreview)x\(appState.canvas.resolvedHeightPreview)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("Export \(appState.canvas.resolvedWidthExport)x\(appState.canvas.resolvedHeightExport)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var animationSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            compactIntField(title: "FPS", value: $appState.animation.fps, range: 1...120)
+                .onChange(of: appState.animation.fps) { _ in
+                    appState.animation.clamp()
+                }
+
+            compactIntField(title: "Frames", value: $appState.animation.frameCount, range: 1...4096)
+                .onChange(of: appState.animation.frameCount) { _ in
+                    appState.animation.clamp()
+                    appState.alignTrackEndpointsWithFrameCount()
+                }
+
+            compactIntSlider(title: "Scrub Frame", value: $appState.animation.scrubFrame, range: 0...max(0, appState.animation.frameCount - 1))
+                .onChange(of: appState.animation.scrubFrame) { _ in
+                    appState.requestAnimationPreview()
+                }
+
+            Button("Open Timeline Editor") {
+                showTimeline = true
+            }
+            .buttonStyle(.borderedProminent)
+
+            Button("Preview Current Frame") {
+                appState.requestAnimationPreview()
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var previewPane: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Preview")
                     .font(.headline)
+
                 Spacer()
+
+                Picker("Preview", selection: $previewMode) {
+                    ForEach(PreviewMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+
                 Circle()
                     .fill(appState.workerConnected ? Color.green : Color.orange)
                     .frame(width: 10, height: 10)
-                Text(appState.workerConnected ? "Worker connected" : "Worker reconnecting")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             ZStack {
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.black.opacity(0.9))
+                    .fill(Color.black)
 
-                if let image = appState.previewImage {
+                if let image = currentPreviewImage {
                     Image(nsImage: image)
                         .resizable()
                         .interpolation(.high)
                         .scaledToFit()
-                        .padding(10)
+                        .padding(8)
                 } else {
-                    Text("No preview yet")
+                    Text("No preview")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -240,46 +365,174 @@ struct MainWindowView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if !appState.lastErrorText.isEmpty {
+            if appState.lastErrorText.isEmpty == false {
                 Text(appState.lastErrorText)
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .lineLimit(3)
             }
+
+            HStack(spacing: 8) {
+                Button("Render") {
+                    appState.requestPreview()
+                }
+                .buttonStyle(.bordered)
+
+                Button("Animation Frame") {
+                    appState.requestAnimationPreview()
+                }
+                .buttonStyle(.bordered)
+
+                Button("Timeline") {
+                    showTimeline = true
+                }
+                .buttonStyle(.borderedProminent)
+            }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(12)
     }
 
-    private var exportPanel: some View {
+    private var outputPane: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Export")
                 .font(.headline)
 
-            ProgressView(value: appState.exportProgress)
-                .progressViewStyle(.linear)
-
-            Text(appState.exportStatusText.isEmpty ? "Idle" : appState.exportStatusText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            List(appState.exportedFiles, id: \.self) { item in
-                Text(item)
-                    .font(.system(.caption, design: .monospaced))
+            GroupBox("Image") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ProgressView(value: appState.exportProgress)
+                    Text(appState.exportStatusText.isEmpty ? "Idle" : appState.exportStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    List(appState.exportedFiles, id: \.self) { item in
+                        Text(item)
+                            .font(.system(.caption, design: .monospaced))
+                    }
+                    .frame(minHeight: 120)
+                }
             }
-            .listStyle(.inset)
+
+            GroupBox("Animation") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ProgressView(value: appState.animationExportProgress)
+                    Text(appState.animationExportStatusText.isEmpty ? "Idle" : appState.animationExportStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    List(appState.animationExportedFiles, id: \.self) { item in
+                        Text(item)
+                            .font(.system(.caption, design: .monospaced))
+                    }
+                    .frame(minHeight: 100)
+                }
+            }
 
             Spacer()
         }
-        .padding(16)
-        .frame(minWidth: 290, idealWidth: 320, maxWidth: 360)
+        .padding(12)
+    }
+
+    private var currentPreviewImage: NSImage? {
+        switch previewMode {
+        case .staticImage:
+            return appState.previewImage
+        case .animation:
+            return appState.animationPreviewImage ?? appState.previewImage
+        }
+    }
+
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .textCase(.uppercase)
+            .foregroundStyle(.secondary)
+    }
+
+    private func compactPicker<T: Hashable, Content: View>(
+        _ title: String,
+        selection: Binding<T>,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Picker(title, selection: selection, content: content)
+                .pickerStyle(.menu)
+                .labelsHidden()
+        }
+    }
+
+    private func compactIntField(title: String, value: Binding<Int>, range: ClosedRange<Int>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                TextField("", value: value, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .onSubmit {
+                        value.wrappedValue = min(max(value.wrappedValue, range.lowerBound), range.upperBound)
+                    }
+
+                Stepper("", value: value, in: range)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private func compactIntSlider(title: String, value: Binding<Int>, range: ClosedRange<Int>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            compactIntField(title: title, value: value, range: range)
+            Slider(
+                value: Binding(
+                    get: { Double(value.wrappedValue) },
+                    set: { value.wrappedValue = Int($0.rounded()) }
+                ),
+                in: Double(range.lowerBound)...Double(range.upperBound),
+                step: 1
+            )
+        }
+    }
+
+    private func compactDoubleSlider(
+        title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        precision: Int
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                TextField("", value: value, format: .number.precision(.fractionLength(precision)))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .frame(width: 84)
+                    .onSubmit {
+                        value.wrappedValue = min(max(value.wrappedValue, range.lowerBound), range.upperBound)
+                    }
+                Slider(value: value, in: range, step: step)
+            }
+        }
     }
 
     private func shapeCountBinding(_ kind: ShapeKind) -> Binding<Int> {
         Binding(
             get: { appState.params.shapeCounts[kind] },
             set: { newValue in
-                appState.params.shapeCounts[kind] = newValue
+                appState.params.shapeCounts[kind] = min(max(newValue, 0), 300)
+            }
+        )
+    }
+
+    private func shapeFillRatioBinding(_ kind: ShapeKind) -> Binding<Double> {
+        Binding(
+            get: { appState.params.fillRatios[kind] },
+            set: { newValue in
+                appState.params.fillRatios[kind] = min(max(newValue, 0), 1)
             }
         )
     }
@@ -325,28 +578,60 @@ struct MainWindowView: View {
             }
         )
     }
+}
 
-    @ViewBuilder
-    private func sectionTitle(_ text: String) -> some View {
-        Text(text)
-            .font(.subheadline.weight(.bold))
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
+private struct ExportSheetView: View {
+    private enum ExportType: String, CaseIterable, Identifiable {
+        case staticBatch = "Static Batch"
+        case animation = "Animation"
+
+        var id: String { rawValue }
     }
 
-    @ViewBuilder
-    private func labeledSlider(
-        title: String,
-        value: Binding<Double>,
-        range: ClosedRange<Double>,
-        step: Double,
-        format: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("\(title): \(String(format: format, value.wrappedValue))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Slider(value: value, in: range, step: step)
+    @ObservedObject var appState: AppState
+    @Binding var isPresented: Bool
+
+    @State private var exportType: ExportType = .staticBatch
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Export")
+                .font(.headline)
+
+            Picker("Type", selection: $exportType) {
+                ForEach(ExportType.allCases) { item in
+                    Text(item.rawValue).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if exportType == .staticBatch {
+                Text("Exports PNG + SVG + JBT for the configured repeats.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Exports PNG frames + animation.jbt.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    isPresented = false
+                }
+                Button("Export") {
+                    if exportType == .staticBatch {
+                        appState.exportBatch()
+                    } else {
+                        appState.exportAnimation()
+                    }
+                    isPresented = false
+                }
+                .buttonStyle(.borderedProminent)
+            }
         }
+        .padding(16)
+        .frame(width: 420)
     }
 }

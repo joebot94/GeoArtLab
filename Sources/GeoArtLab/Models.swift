@@ -38,11 +38,27 @@ enum ShapeKind: String, CaseIterable, Identifiable {
     }
 }
 
+enum SymmetryMode: String, CaseIterable, Identifiable {
+    case radial
+    case none
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .radial: return "Radial"
+        case .none: return "None (Random Placement)"
+        }
+    }
+}
+
 enum BackgroundStyle: String, CaseIterable, Identifiable {
     case paper
     case midnight
     case warm
     case flat
+    case pureBlack = "pure_black"
+    case creme
 
     var id: String { rawValue }
 
@@ -52,6 +68,8 @@ enum BackgroundStyle: String, CaseIterable, Identifiable {
         case .midnight: return "Midnight"
         case .warm: return "Warm"
         case .flat: return "Flat"
+        case .pureBlack: return "Pure Black"
+        case .creme: return "Creme"
         }
     }
 }
@@ -59,7 +77,10 @@ enum BackgroundStyle: String, CaseIterable, Identifiable {
 enum ColorMode: String, CaseIterable, Identifiable {
     case randomPerShape = "random_per_shape"
     case paletteCycle = "palette_cycle"
-    case quadrant = "quadrant"
+    case quadrant
+    case paletteLock = "palette_lock"
+    case paletteRotatePerRing = "palette_rotate_per_ring"
+    case seedDerivedIndex = "seed_derived_index"
 
     var id: String { rawValue }
 
@@ -68,6 +89,9 @@ enum ColorMode: String, CaseIterable, Identifiable {
         case .randomPerShape: return "Random Per Shape"
         case .paletteCycle: return "Palette Cycle"
         case .quadrant: return "Quadrant"
+        case .paletteLock: return "Palette Lock"
+        case .paletteRotatePerRing: return "Palette Rotate Per Ring"
+        case .seedDerivedIndex: return "Seed Derived Index"
         }
     }
 }
@@ -125,6 +149,9 @@ enum AspectRatioPreset: String, CaseIterable, Identifiable {
     case ratio3x2 = "3:2"
     case ratio9x16 = "9:16"
     case ratio21x9 = "21:9"
+    case ratio4x3 = "4:3"
+    case ratio31x9 = "31:9"
+    case ratio9x31 = "9:31"
 
     var id: String { rawValue }
 
@@ -140,6 +167,9 @@ enum AspectRatioPreset: String, CaseIterable, Identifiable {
         case .ratio3x2: return 3
         case .ratio9x16: return 9
         case .ratio21x9: return 21
+        case .ratio4x3: return 4
+        case .ratio31x9: return 31
+        case .ratio9x31: return 9
         }
     }
 
@@ -153,10 +183,53 @@ enum AspectRatioPreset: String, CaseIterable, Identifiable {
         case .ratio3x2: return 2
         case .ratio9x16: return 16
         case .ratio21x9: return 9
+        case .ratio4x3: return 3
+        case .ratio31x9: return 9
+        case .ratio9x31: return 31
         }
     }
 
     var value: Double { width / height }
+}
+
+enum ResolutionPreset: String, CaseIterable, Identifiable {
+    case custom
+    case p720 = "720p"
+    case p1080 = "1080p"
+    case p1440 = "1440p"
+    case k4 = "4K"
+    case k8 = "8K"
+    case k16 = "16K"
+
+    var id: String { rawValue }
+
+    var title: String { rawValue.uppercased() }
+
+    var longEdge: Int? {
+        switch self {
+        case .custom: return nil
+        case .p720: return 720
+        case .p1080: return 1080
+        case .p1440: return 1440
+        case .k4: return 2160
+        case .k8: return 4320
+        case .k16: return 8640
+        }
+    }
+}
+
+enum RatioDrivingDimension: String, CaseIterable, Identifiable {
+    case width
+    case height
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .width: return "Width Drives"
+        case .height: return "Height Drives"
+        }
+    }
 }
 
 struct ShapeCounts: Equatable {
@@ -186,6 +259,39 @@ struct ShapeCounts: Equatable {
             case .line: line = newValue
             }
         }
+    }
+}
+
+struct ShapeFillRatios: Equatable {
+    var circle: Double = 0.65
+    var triangle: Double = 0.65
+    var rectangle: Double = 0.65
+    var line: Double = 0.65
+
+    subscript(_ kind: ShapeKind) -> Double {
+        get {
+            switch kind {
+            case .circle: return circle
+            case .triangle: return triangle
+            case .rectangle: return rectangle
+            case .line: return line
+            }
+        }
+        set {
+            switch kind {
+            case .circle: circle = newValue
+            case .triangle: triangle = newValue
+            case .rectangle: rectangle = newValue
+            case .line: line = newValue
+            }
+        }
+    }
+
+    mutating func setAll(_ value: Double) {
+        circle = value
+        triangle = value
+        rectangle = value
+        line = value
     }
 }
 
@@ -254,40 +360,104 @@ struct ShapePlacementRegions: Equatable {
 }
 
 struct CanvasSettings: Equatable {
-    var lockRatio: Bool = false
+    var lockRatio: Bool = true
     var ratioPreset: AspectRatioPreset = .ratio1x1
-    var longEdgePx: Int = 1024
-    var manualWidth: Int = 1024
-    var manualHeight: Int = 1024
+    var ratioDrivingDimension: RatioDrivingDimension = .width
+    var resolutionPreset: ResolutionPreset = .p1080
+    var longEdgePx: Int = 1080
+    var manualWidth: Int = 1080
+    var manualHeight: Int = 1080
+
+    var previewMaxDim: Int = 4096
+    var exportMaxDim: Int = 16384
+
+    var clampedPreviewMaxDim: Int {
+        clampDimension(previewMaxDim, minimum: 512, maximum: 4096)
+    }
+
+    var clampedExportMaxDim: Int {
+        clampDimension(exportMaxDim, minimum: 1024, maximum: 16384)
+    }
 
     var clampedLongEdge: Int {
-        min(max(longEdgePx, 512), 4096)
+        clampDimension(longEdgePx, minimum: 512, maximum: clampedExportMaxDim)
     }
 
-    var resolvedWidth: Int {
-        if lockRatio {
-            let ratio = ratioPreset.value
-            if ratio >= 1 {
-                return clampDimension(clampedLongEdge)
-            }
-            return clampDimension(Int(round(Double(clampedLongEdge) * ratio)))
+    var clampedManualWidth: Int {
+        clampDimension(manualWidth, minimum: 64, maximum: clampedExportMaxDim)
+    }
+
+    var clampedManualHeight: Int {
+        clampDimension(manualHeight, minimum: 64, maximum: clampedExportMaxDim)
+    }
+
+    var resolvedWidthExport: Int {
+        resolvedExportDimensions.width
+    }
+
+    var resolvedHeightExport: Int {
+        resolvedExportDimensions.height
+    }
+
+    var resolvedWidthPreview: Int {
+        min(resolvedExportDimensions.width, clampedPreviewMaxDim)
+    }
+
+    var resolvedHeightPreview: Int {
+        min(resolvedExportDimensions.height, clampedPreviewMaxDim)
+    }
+
+    var resolvedExportDimensions: (width: Int, height: Int) {
+        if !lockRatio {
+            return (clampedManualWidth, clampedManualHeight)
         }
-        return clampDimension(manualWidth)
-    }
 
-    var resolvedHeight: Int {
-        if lockRatio {
-            let ratio = ratioPreset.value
-            if ratio >= 1 {
-                return clampDimension(Int(round(Double(clampedLongEdge) / ratio)))
-            }
-            return clampDimension(clampedLongEdge)
+        let ratio = ratioPreset.value
+        switch ratioDrivingDimension {
+        case .width:
+            let width = clampedManualWidth
+            let height = clampDimension(Int(round(Double(width) / ratio)), minimum: 64, maximum: clampedExportMaxDim)
+            return (width, height)
+        case .height:
+            let height = clampedManualHeight
+            let width = clampDimension(Int(round(Double(height) * ratio)), minimum: 64, maximum: clampedExportMaxDim)
+            return (width, height)
         }
-        return clampDimension(manualHeight)
     }
 
-    private func clampDimension(_ value: Int) -> Int {
-        min(max(value, 64), 4096)
+    mutating func applyResolutionPreset() {
+        guard let edge = resolutionPreset.longEdge else { return }
+        longEdgePx = edge
+        applyLongEdge()
+    }
+
+    mutating func applyLongEdge() {
+        let edge = clampedLongEdge
+        let ratio = ratioPreset.value
+        if ratio >= 1 {
+            manualWidth = edge
+            manualHeight = clampDimension(Int(round(Double(edge) / ratio)), minimum: 64, maximum: clampedExportMaxDim)
+        } else {
+            manualHeight = edge
+            manualWidth = clampDimension(Int(round(Double(edge) * ratio)), minimum: 64, maximum: clampedExportMaxDim)
+        }
+    }
+
+    mutating func applyRatioLock() {
+        guard lockRatio else { return }
+        switch ratioDrivingDimension {
+        case .width:
+            manualWidth = clampedManualWidth
+            manualHeight = clampDimension(Int(round(Double(manualWidth) / ratioPreset.value)), minimum: 64, maximum: clampedExportMaxDim)
+        case .height:
+            manualHeight = clampedManualHeight
+            manualWidth = clampDimension(Int(round(Double(manualHeight) * ratioPreset.value)), minimum: 64, maximum: clampedExportMaxDim)
+        }
+        longEdgePx = max(manualWidth, manualHeight)
+    }
+
+    private func clampDimension(_ value: Int, minimum: Int, maximum: Int) -> Int {
+        min(max(value, minimum), maximum)
     }
 }
 
@@ -298,15 +468,170 @@ struct RenderParameters: Equatable {
     var angleRanges = ShapeAngleRanges()
     var placementRegions = ShapePlacementRegions()
     var symmetry: Int = 4
+    var symmetryMode: SymmetryMode = .radial
     var rotation: Double = 0
     var scaleRange: Double = 0.45
     var strokeWidth: Double = 2
     var fillRatio: Double = 0.65
+    var fillRatios = ShapeFillRatios()
     var palette: PalettePreset = .synthwave
     var customPaletteText: String = "#0B132B,#1C2541,#3A506B,#5BC0BE,#F3F9D2"
     var colorMode: ColorMode = .randomPerShape
     var backgroundStyle: BackgroundStyle = .paper
     var seed: Int = 42
+
+    var totalShapes: Int {
+        shapeCounts.total
+    }
+}
+
+enum TrackInterpolation: String, CaseIterable, Identifiable {
+    case hold
+    case linear
+    case easeInOut = "ease_in_out"
+    case easeIn = "ease_in"
+    case easeOut = "ease_out"
+    case bounce
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .hold: return "Hold"
+        case .linear: return "Linear"
+        case .easeInOut: return "Ease In Out"
+        case .easeIn: return "Ease In"
+        case .easeOut: return "Ease Out"
+        case .bounce: return "Bounce"
+        }
+    }
+}
+
+struct TimelineKeyframe: Identifiable, Equatable {
+    var id = UUID()
+    var frame: Int
+    var value: Double
+    var interpolation: TrackInterpolation
+}
+
+struct AnimationTrack: Identifiable, Equatable {
+    let id: String
+    var title: String
+    var enabled: Bool
+    var minValue: Double
+    var maxValue: Double
+    var step: Double
+    var isInteger: Bool
+    var colorHex: String
+    var keyframes: [TimelineKeyframe]
+}
+
+struct AnimationSettings: Equatable {
+    var fps: Int = 24
+    var frameCount: Int = 96
+    var scrubFrame: Int = 0
+    var animationName: String = "geo-art-animation"
+    var tracks: [AnimationTrack] = []
+
+    mutating func clamp() {
+        fps = min(max(fps, 1), 120)
+        frameCount = min(max(frameCount, 1), 4096)
+        scrubFrame = min(max(scrubFrame, 0), frameCount - 1)
+    }
+}
+
+enum AnimationTrackFactory {
+    static func makeDefaultTracks(from params: RenderParameters) -> [AnimationTrack] {
+        var tracks: [AnimationTrack] = [
+            AnimationTrack(
+                id: "rotation",
+                title: "Rotation",
+                enabled: false,
+                minValue: 0,
+                maxValue: 360,
+                step: 1,
+                isInteger: false,
+                colorHex: "#FF5555",
+                keyframes: defaultKeyframes(value: params.rotation)
+            ),
+            AnimationTrack(
+                id: "stroke_width",
+                title: "Stroke Width",
+                enabled: false,
+                minValue: 0.5,
+                maxValue: 18,
+                step: 0.1,
+                isInteger: false,
+                colorHex: "#FFAA44",
+                keyframes: defaultKeyframes(value: params.strokeWidth)
+            ),
+            AnimationTrack(
+                id: "fill_ratio",
+                title: "Global Fill Ratio",
+                enabled: false,
+                minValue: 0,
+                maxValue: 1,
+                step: 0.01,
+                isInteger: false,
+                colorHex: "#55CC66",
+                keyframes: defaultKeyframes(value: params.fillRatio)
+            ),
+            AnimationTrack(
+                id: "symmetry",
+                title: "Symmetry",
+                enabled: false,
+                minValue: 1,
+                maxValue: 12,
+                step: 1,
+                isInteger: true,
+                colorHex: "#6688FF",
+                keyframes: defaultKeyframes(value: Double(params.symmetry))
+            ),
+        ]
+
+        for kind in ShapeKind.allCases {
+            let count = Double(params.shapeCounts[kind])
+            tracks.append(
+                AnimationTrack(
+                    id: "shape_counts.\(kind.rawValue)",
+                    title: "\(kind.title) Count",
+                    enabled: false,
+                    minValue: 0,
+                    maxValue: 300,
+                    step: 1,
+                    isInteger: true,
+                    colorHex: "#AA66FF",
+                    keyframes: defaultKeyframes(value: count)
+                )
+            )
+        }
+
+        for kind in ShapeKind.allCases {
+            let fillRatio = params.fillRatios[kind]
+            tracks.append(
+                AnimationTrack(
+                    id: "fill_ratios.\(kind.rawValue)",
+                    title: "\(kind.title) Fill Ratio",
+                    enabled: false,
+                    minValue: 0,
+                    maxValue: 1,
+                    step: 0.01,
+                    isInteger: false,
+                    colorHex: "#44CCAA",
+                    keyframes: defaultKeyframes(value: fillRatio)
+                )
+            )
+        }
+
+        return tracks
+    }
+
+    private static func defaultKeyframes(value: Double) -> [TimelineKeyframe] {
+        [
+            TimelineKeyframe(frame: 0, value: value, interpolation: .linear),
+            TimelineKeyframe(frame: 95, value: value, interpolation: .linear),
+        ]
+    }
 }
 
 enum PaletteLibrary {

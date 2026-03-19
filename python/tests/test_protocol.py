@@ -78,6 +78,18 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(unknown["type"], "error")
         self.assertFalse(unknown["ok"])
 
+    def test_hello_contains_new_capabilities(self) -> None:
+        self.send_json({"request_id": "hello-1", "type": "hello", "payload": {}})
+        ready = self.read_message()
+        self.assertEqual(ready["request_id"], "hello-1")
+        self.assertEqual(ready["type"], "ready")
+        self.assertTrue(ready["ok"])
+        capabilities = ready["payload"].get("capabilities", [])
+        self.assertIn("render_preview", capabilities)
+        self.assertIn("export_batch", capabilities)
+        self.assertIn("render_animation_preview", capabilities)
+        self.assertIn("export_animation", capabilities)
+
     def test_hello_and_export_batch_contract(self) -> None:
         self.send_json({"request_id": "hello-1", "type": "hello", "payload": {}})
         ready = self.read_message()
@@ -148,14 +160,18 @@ class ProtocolTests(unittest.TestCase):
                             "style_id": "clean_geometric",
                             "shape_family": "mixed",
                             "shape_counts": {"circle": 4, "triangle": 3, "rectangle": 2, "line": 1},
+                            "total_shapes": 10,
                             "symmetry": 1,
+                            "symmetry_mode": "none",
                             "rotation": 10,
                             "scale_range": 0.4,
                             "stroke_width": 2,
                             "fill_ratio": 0.6,
+                            "fill_ratios": {"circle": 1.0, "triangle": 0.5, "rectangle": 0.2, "line": 0.0},
                             "palette_id": "synthwave",
                             "palette_colors": ["#2D1E2F", "#D7263D", "#F46036", "#2E294E", "#1B998B"],
-                            "background_style": "paper",
+                            "background_style": "creme",
+                            "color_mode": "palette_lock",
                             "angle_ranges_deg": {
                                 "circle": {"min": 0, "max": 10},
                                 "triangle": {"min": 15, "max": 30},
@@ -168,7 +184,14 @@ class ProtocolTests(unittest.TestCase):
                                 "rectangle": {"x_min": 0.4, "x_max": 0.9, "y_min": 0.4, "y_max": 0.9},
                                 "line": {"x_min": 0.6, "x_max": 1.0, "y_min": 0.6, "y_max": 1.0},
                             },
-                            "canvas_meta": {"lock_ratio": True, "ratio_preset": "1:1", "long_edge_px": 1024},
+                            "canvas_meta": {
+                                "lock_ratio": True,
+                                "ratio_preset": "1:1",
+                                "long_edge_px": 1024,
+                                "resolution_preset": "1080p",
+                                "preview_max_dim": 4096,
+                                "export_max_dim": 16384,
+                            },
                         },
                     },
                 }
@@ -189,6 +212,97 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(complete["request_id"], "exp-new")
             self.assertTrue(complete["ok"])
             self.assertEqual(complete["payload"]["total"], 1)
+
+    def test_animation_preview_and_export_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            render = {
+                "style_id": "clean_geometric",
+                "shape_family": "mixed",
+                "shape_counts": {"circle": 4, "triangle": 3, "rectangle": 2, "line": 1},
+                "symmetry": 2,
+                "symmetry_mode": "radial",
+                "rotation": 5,
+                "scale_range": 0.4,
+                "stroke_width": 2,
+                "fill_ratio": 0.6,
+                "palette_id": "synthwave",
+                "palette_colors": ["#2D1E2F", "#D7263D", "#F46036", "#2E294E", "#1B998B"],
+                "background_style": "pure_black",
+                "canvas_meta": {
+                    "lock_ratio": True,
+                    "ratio_preset": "1:1",
+                    "long_edge_px": 1024,
+                    "resolution_preset": "1080p",
+                    "preview_max_dim": 4096,
+                    "export_max_dim": 16384,
+                },
+                "seed": 42,
+            }
+            timeline = {
+                "fps": 8,
+                "frame_count": 4,
+                "tracks": [
+                    {
+                        "parameter_id": "rotation",
+                        "keyframes": [
+                            {"frame": 0, "value": 0, "interpolation": "linear"},
+                            {"frame": 3, "value": 180, "interpolation": "linear"},
+                        ],
+                    }
+                ],
+            }
+
+            self.send_json(
+                {
+                    "request_id": "anim-prev-1",
+                    "type": "render_animation_preview",
+                    "payload": {
+                        "output_root": td,
+                        "canvas": {"width": 256, "height": 256},
+                        "params": render,
+                        "timeline": timeline,
+                        "frame": 2,
+                    },
+                }
+            )
+            preview = self.read_message()
+            self.assertEqual(preview["request_id"], "anim-prev-1")
+            self.assertEqual(preview["type"], "animation_preview_ready")
+            self.assertTrue(preview["ok"])
+
+            self.send_json(
+                {
+                    "request_id": "anim-exp-1",
+                    "type": "export_animation",
+                    "payload": {
+                        "output_root": td,
+                        "canvas": {"width": 256, "height": 256},
+                        "render": render,
+                        "timeline": timeline,
+                        "animation_name": "proto-test",
+                    },
+                }
+            )
+
+            messages = []
+            complete = None
+            deadline = time.time() + 30.0
+            while time.time() < deadline:
+                message = self.read_message(timeout=1.0, fail_on_timeout=False)
+                if message is None:
+                    continue
+                messages.append(message)
+                if message["type"] == "animation_export_complete":
+                    complete = message
+                    break
+
+            progress_messages = [m for m in messages if m["type"] == "animation_export_progress"]
+            self.assertGreaterEqual(len(progress_messages), 1)
+            self.assertIsNotNone(complete)
+            assert complete is not None
+            self.assertEqual(complete["request_id"], "anim-exp-1")
+            self.assertTrue(complete["ok"])
+            self.assertEqual(complete["payload"]["frame_count"], 4)
 
 
 if __name__ == "__main__":

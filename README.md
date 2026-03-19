@@ -22,7 +22,7 @@ GeoArtLab is a macOS SwiftUI app with a long-lived Python worker for determinist
 1. `cd /Users/joe/Documents/GeoArtLab`
 2. Create a venv if desired: `python3 -m venv .venv && source .venv/bin/activate`
 3. Install Python deps: `python3 -m pip install -r python/requirements.txt`
-4. Launch app: `swift run`
+4. Launch app: `./run_geoartlab.sh` (recommended) or `swift run`
 
 For Xcode workflow, open the package folder in Xcode and run the `GeoArtLab` executable target.
 
@@ -64,3 +64,16 @@ Each export writes:
 - `YYYYMMDD_HHMMSS_s####_clean-geometric.svg`
 - `YYYYMMDD_HHMMSS_s####_clean-geometric.jbt`
 - `index.jbtl` append record
+
+## Swift/Metal Migration
+
+Active migration branch: `codex/swift-metal-migration`
+
+Migration docs:
+- `docs/migration/swift-metal-migration.md`
+- `docs/migration/status.md`
+- `docs/migration/decisions.md`
+
+Parity harness (M1 scaffold):
+- Swift sample report: `swift run GeoArtLab --migration-parity-sample --seed 42 --width 512 --height 512`
+- Python-vs-Swift compare: `python3 python/tests/migration_parity_harness.py --seed 42 --width 512 --height 512`

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -11,7 +12,9 @@ import numpy as np
 from PIL import Image, ImageDraw, PngImagePlugin
 
 APP_ID = "GeoArtLab"
+RENDER_ENGINE = "python"
 JBT_TYPE = "geo_art_piece"
+ANIMATION_JBT_TYPE = "geo_art_animation"
 JBT_VERSION = "1.0"
 DEFAULT_STYLE_ID = "clean_geometric"
 
@@ -39,6 +42,8 @@ BACKGROUND_COLORS: dict[str, str] = {
     "midnight": "#0D1321",
     "warm": "#2F1B12",
     "flat": "#111111",
+    "pure_black": "#000000",
+    "creme": "#F5E9D8",
 }
 
 SHAPE_ORDER = ("circle", "triangle", "rectangle", "line")
@@ -76,6 +81,13 @@ def ensure_output_root(path_like: str | Path) -> Path:
     return path
 
 
+def slugify(value: str) -> str:
+    lowered = value.strip().lower()
+    normalized = re.sub(r"[^a-z0-9_-]+", "-", lowered)
+    normalized = re.sub(r"-+", "-", normalized)
+    return normalized.strip("-") or "animation"
+
+
 def generate_seed_sequence(base_seed: int, repeats: int) -> list[int]:
     repeats = max(1, int(repeats))
     return [int(base_seed) + i for i in range(repeats)]
@@ -93,10 +105,11 @@ def parse_palette(render_params: dict[str, Any]) -> list[str]:
     return PALETTES.get(palette_id, PALETTES["synthwave"])
 
 
-def normalize_canvas(canvas: dict[str, Any] | None) -> dict[str, int]:
+def normalize_canvas(canvas: dict[str, Any] | None, max_dimension: int = 4096) -> dict[str, int]:
     canvas = canvas or {}
-    width = clamp_int(canvas.get("width"), 64, 4096, 1024)
-    height = clamp_int(canvas.get("height"), 64, 4096, 1024)
+    max_dim = max(64, int(max_dimension))
+    width = clamp_int(canvas.get("width"), 64, max_dim, min(1024, max_dim))
+    height = clamp_int(canvas.get("height"), 64, max_dim, min(1024, max_dim))
     return {"width": width, "height": height}
 
 
@@ -104,10 +117,15 @@ def normalize_canvas_meta(render_params: dict[str, Any]) -> dict[str, Any]:
     raw = render_params.get("canvas_meta")
     if not isinstance(raw, dict):
         raw = {}
+    preview_max = clamp_int(raw.get("preview_max_dim"), 512, 4096, 4096)
+    export_max = clamp_int(raw.get("export_max_dim"), 1024, 16384, 16384)
     return {
         "lock_ratio": bool(raw.get("lock_ratio", False)),
         "ratio_preset": str(raw.get("ratio_preset", "1:1")),
-        "long_edge_px": clamp_int(raw.get("long_edge_px"), 512, 4096, 1024),
+        "long_edge_px": clamp_int(raw.get("long_edge_px"), 512, export_max, 1024),
+        "resolution_preset": str(raw.get("resolution_preset", "custom")),
+        "preview_max_dim": preview_max,
+        "export_max_dim": export_max,
     }
 
 
@@ -137,6 +155,11 @@ def normalize_shape_counts(render_params: dict[str, Any], shape_family: str) -> 
                 value = raw.get(f"{kind}s")
             counts[kind] = clamp_int(value, 0, 300, 0)
         return counts
+
+    total_shapes = render_params.get("total_shapes")
+    if total_shapes is not None:
+        return legacy_shape_counts(shape_family, total_shapes)
+
     return legacy_shape_counts(shape_family, render_params.get("shape_count"))
 
 
@@ -180,6 +203,20 @@ def normalize_placement_regions(render_params: dict[str, Any]) -> dict[str, dict
     return normalized
 
 
+def normalize_fill_ratios(render_params: dict[str, Any], global_fill_ratio: float) -> dict[str, float]:
+    raw = render_params.get("fill_ratios")
+    if not isinstance(raw, dict):
+        raw = {}
+
+    normalized: dict[str, float] = {}
+    for kind in SHAPE_ORDER:
+        value = raw.get(kind)
+        if value is None:
+            value = raw.get(f"{kind}s")
+        normalized[kind] = clamp_float(value, 0.0, 1.0, global_fill_ratio)
+    return normalized
+
+
 def normalize_render_params(render_params: dict[str, Any], seed_override: int | None = None) -> dict[str, Any]:
     palette_colors = parse_palette(render_params)
     seed_source = seed_override if seed_override is not None else render_params.get("seed", 42)
@@ -188,16 +225,23 @@ def normalize_render_params(render_params: dict[str, Any], seed_override: int | 
     angle_ranges_deg = normalize_angle_ranges(render_params)
     placement_regions = normalize_placement_regions(render_params)
     canvas_meta = normalize_canvas_meta(render_params)
+    fill_ratio = clamp_float(render_params.get("fill_ratio"), 0.0, 1.0, 0.65)
+    fill_ratios = normalize_fill_ratios(render_params, fill_ratio)
+    symmetry_mode_raw = str(render_params.get("symmetry_mode", "radial")).strip().lower()
+    symmetry_mode = "none" if symmetry_mode_raw in {"none", "off", "random"} else "radial"
 
     normalized = {
         "style_id": str(render_params.get("style_id", DEFAULT_STYLE_ID)),
         "shape_family": shape_family,
         "shape_count": sum(shape_counts.values()),
+        "total_shapes": sum(shape_counts.values()),
         "symmetry": clamp_int(render_params.get("symmetry"), 1, 12, 4),
+        "symmetry_mode": symmetry_mode,
         "rotation": clamp_float(render_params.get("rotation"), 0.0, 360.0, 0.0),
         "scale_range": clamp_float(render_params.get("scale_range"), 0.1, 1.0, 0.45),
         "stroke_width": clamp_float(render_params.get("stroke_width"), 0.5, 18.0, 2.0),
-        "fill_ratio": clamp_float(render_params.get("fill_ratio"), 0.0, 1.0, 0.65),
+        "fill_ratio": fill_ratio,
+        "fill_ratios": fill_ratios,
         "background_style": str(render_params.get("background_style", "paper")),
         "palette_id": str(render_params.get("palette_id", "synthwave")),
         "color_mode": str(render_params.get("color_mode", "random_per_shape")),
@@ -239,6 +283,7 @@ def choose_shape_color(
     y: float,
     width: int,
     height: int,
+    seed: int,
 ) -> str:
     if not palette:
         return "#FFFFFF"
@@ -254,6 +299,16 @@ def choose_shape_color(
             quadrant += 2
         return palette[quadrant % len(palette)]
 
+    if color_mode == "palette_lock":
+        return palette[base_index % len(palette)]
+
+    if color_mode == "palette_rotate_per_ring":
+        return palette[(base_index + symmetry_index * 2) % len(palette)]
+
+    if color_mode == "seed_derived_index":
+        derived = int(abs((seed * 31) + (x * 0.71) + (y * 0.37) + (base_index * 13)))
+        return palette[derived % len(palette)]
+
     if color_mode == "random_per_instance":
         return str(rng.choice(palette))
 
@@ -262,7 +317,8 @@ def choose_shape_color(
 
 def build_scene(render_params: dict[str, Any], canvas: dict[str, Any]) -> dict[str, Any]:
     params = normalize_render_params(render_params)
-    canvas_norm = normalize_canvas(canvas)
+    max_dimension = int(params["canvas_meta"].get("export_max_dim", 16384))
+    canvas_norm = normalize_canvas(canvas, max_dimension=max_dimension)
 
     width = canvas_norm["width"]
     height = canvas_norm["height"]
@@ -277,9 +333,11 @@ def build_scene(render_params: dict[str, Any], canvas: dict[str, Any]) -> dict[s
     angle_ranges_deg = params["angle_ranges_deg"]
     placement_regions = params["placement_regions"]
     symmetry = params["symmetry"]
+    symmetry_mode = str(params.get("symmetry_mode", "radial"))
     global_rotation = math.radians(params["rotation"])
     scale_range = params["scale_range"]
-    fill_ratio = params["fill_ratio"]
+    fill_ratio_global = params["fill_ratio"]
+    fill_ratios = params["fill_ratios"]
     stroke_width = params["stroke_width"]
     palette = params["palette_colors"]
     color_mode = params["color_mode"]
@@ -302,6 +360,8 @@ def build_scene(render_params: dict[str, Any], canvas: dict[str, Any]) -> dict[s
         angle_min = float(angle_config["min"])
         angle_max = float(angle_config["max"])
 
+        kind_fill_ratio = clamp_float(fill_ratios.get(kind), 0.0, 1.0, fill_ratio_global)
+
         for _ in range(kind_count):
             base_x = float(rng.uniform(x_min, x_max))
             base_y = float(rng.uniform(y_min, y_max))
@@ -310,13 +370,20 @@ def build_scene(render_params: dict[str, Any], canvas: dict[str, Any]) -> dict[s
             angle = math.radians(angle_deg)
             ratio = float(rng.uniform(0.55, 1.65))
             base_color = str(rng.choice(palette))
-            is_filled = bool(rng.random() <= fill_ratio)
+            is_filled = bool(rng.random() <= kind_fill_ratio)
 
-            for symmetry_index in range(symmetry):
-                orbit_angle = global_rotation + (2.0 * math.pi * symmetry_index / symmetry)
-                x, y = rotate_point(base_x, base_y, center_x, center_y, orbit_angle)
-                x = min(max(x, x_min), x_max)
-                y = min(max(y, y_min), y_max)
+            instance_count = symmetry if symmetry_mode == "radial" else 1
+            for symmetry_index in range(instance_count):
+                if symmetry_mode == "radial":
+                    orbit_angle = global_rotation + (2.0 * math.pi * symmetry_index / symmetry)
+                    x, y = rotate_point(base_x, base_y, center_x, center_y, orbit_angle)
+                    x = min(max(x, x_min), x_max)
+                    y = min(max(y, y_min), y_max)
+                    shape_angle = angle + orbit_angle
+                else:
+                    x = min(max(base_x, x_min), x_max)
+                    y = min(max(base_y, y_min), y_max)
+                    shape_angle = angle + global_rotation
                 color = choose_shape_color(
                     color_mode=color_mode,
                     palette=palette,
@@ -328,6 +395,7 @@ def build_scene(render_params: dict[str, Any], canvas: dict[str, Any]) -> dict[s
                     y=y,
                     width=width,
                     height=height,
+                    seed=seed,
                 )
                 shapes.append(
                     {
@@ -335,7 +403,7 @@ def build_scene(render_params: dict[str, Any], canvas: dict[str, Any]) -> dict[s
                         "x": round(x, 4),
                         "y": round(y, 4),
                         "size": round(size, 4),
-                        "angle": round(angle + orbit_angle, 6),
+                        "angle": round(shape_angle, 6),
                         "ratio": round(ratio, 4),
                         "color": color,
                         "filled": is_filled,
@@ -552,6 +620,7 @@ def build_jbt_document(
 ) -> dict[str, Any]:
     payload = {
         "app": APP_ID,
+        "render_engine": RENDER_ENGINE,
         "style_id": render_params["style_id"],
         "seed": seed,
         "repeat_index": repeat_index,
@@ -563,12 +632,15 @@ def build_jbt_document(
         "parameters": {
             "shape_family": render_params["shape_family"],
             "shape_count": render_params["shape_count"],
+            "total_shapes": render_params.get("total_shapes", render_params["shape_count"]),
             "shape_counts": render_params["shape_counts"],
             "symmetry": render_params["symmetry"],
+            "symmetry_mode": render_params.get("symmetry_mode", "radial"),
             "rotation": render_params["rotation"],
             "scale_range": render_params["scale_range"],
             "stroke_width": render_params["stroke_width"],
             "fill_ratio": render_params["fill_ratio"],
+            "fill_ratios": render_params.get("fill_ratios", {}),
             "color_mode": render_params["color_mode"],
             "angle_ranges_deg": render_params["angle_ranges_deg"],
             "placement_regions": render_params["placement_regions"],
@@ -620,6 +692,7 @@ def export_piece(
 
     metadata = {
         "jbt_type": JBT_TYPE,
+        "render_engine": RENDER_ENGINE,
         "seed": str(seed),
         "style": str(scene["style_id"]),
         "palette": str(render_params.get("palette_id", "custom")),
@@ -652,10 +725,13 @@ def export_piece(
         "base_name": base_name,
         "seed": seed,
         "style_id": scene["style_id"],
+        "render_engine": RENDER_ENGINE,
         "canvas": scene["canvas"],
         "canvas_meta": scene["params"].get("canvas_meta", {}),
         "palette_id": scene["params"].get("palette_id", "custom"),
         "shape_counts": scene["params"].get("shape_counts", {}),
+        "symmetry_mode": scene["params"].get("symmetry_mode", "radial"),
+        "fill_ratios": scene["params"].get("fill_ratios", {}),
         "png_path": str(png_path),
         "svg_path": str(svg_path),
         "jbt_path": str(jbt_path),
@@ -688,8 +764,9 @@ def export_batch(
     progress_cb: Callable[[int, int, int, str], None] | None = None,
 ) -> list[dict[str, Any]]:
     out_root = ensure_output_root(output_root)
-    normalized_canvas = normalize_canvas(canvas)
     normalized_render = normalize_render_params(render_params)
+    max_dim = int(normalized_render["canvas_meta"].get("export_max_dim", 16384))
+    normalized_canvas = normalize_canvas(canvas, max_dimension=max_dim)
 
     seeds = generate_seed_sequence(base_seed, repeats)
     items: list[dict[str, Any]] = []
@@ -719,8 +796,9 @@ def render_preview(
     preview_dir = out_root / ".preview"
     preview_dir.mkdir(parents=True, exist_ok=True)
 
-    normalized_canvas = normalize_canvas(canvas)
     normalized_render = normalize_render_params(render_params)
+    preview_max_dim = int(normalized_render["canvas_meta"].get("preview_max_dim", 4096))
+    normalized_canvas = normalize_canvas(canvas, max_dimension=preview_max_dim)
     scene = build_scene(normalized_render, normalized_canvas)
     signature = scene_signature(scene)
 
@@ -732,4 +810,290 @@ def render_preview(
         "scene_signature": signature,
         "width": normalized_canvas["width"],
         "height": normalized_canvas["height"],
+    }
+
+
+def normalize_timeline(payload: dict[str, Any]) -> dict[str, Any]:
+    fps = clamp_int(payload.get("fps"), 1, 120, 24)
+
+    frame_count_raw = payload.get("frame_count")
+    if frame_count_raw is None:
+        duration = clamp_float(payload.get("duration_seconds"), 0.1, 120.0, 4.0)
+        frame_count = max(1, int(round(duration * fps)))
+    else:
+        frame_count = clamp_int(frame_count_raw, 1, 4096, 96)
+        duration = frame_count / float(fps)
+
+    tracks_raw = payload.get("tracks")
+    tracks: list[dict[str, Any]] = []
+    if isinstance(tracks_raw, list):
+        for item in tracks_raw:
+            if not isinstance(item, dict):
+                continue
+            parameter_id = str(item.get("parameter_id", "")).strip()
+            if not parameter_id:
+                continue
+            keyframes_raw = item.get("keyframes")
+            if not isinstance(keyframes_raw, list):
+                continue
+            parsed_keyframes: list[dict[str, Any]] = []
+            for keyframe in keyframes_raw:
+                if not isinstance(keyframe, dict):
+                    continue
+                frame = clamp_int(keyframe.get("frame"), 0, frame_count - 1, 0)
+                value = float(keyframe.get("value", 0.0))
+                interpolation = str(keyframe.get("interpolation", "linear"))
+                if interpolation not in {"hold", "linear", "ease_in_out"}:
+                    interpolation = "linear"
+                parsed_keyframes.append({"frame": frame, "value": value, "interpolation": interpolation})
+            if not parsed_keyframes:
+                continue
+            parsed_keyframes.sort(key=lambda k: k["frame"])
+            tracks.append({"parameter_id": parameter_id, "keyframes": parsed_keyframes})
+
+    return {
+        "fps": fps,
+        "duration_seconds": duration,
+        "frame_count": frame_count,
+        "tracks": tracks,
+    }
+
+
+def _ease_in_out(t: float) -> float:
+    if t <= 0:
+        return 0.0
+    if t >= 1:
+        return 1.0
+    return t * t * (3.0 - 2.0 * t)
+
+
+def sample_track_value(track: dict[str, Any], frame: int) -> float:
+    keyframes = track.get("keyframes", [])
+    if not keyframes:
+        return 0.0
+
+    if frame <= keyframes[0]["frame"]:
+        return float(keyframes[0]["value"])
+    if frame >= keyframes[-1]["frame"]:
+        return float(keyframes[-1]["value"])
+
+    left = keyframes[0]
+    right = keyframes[-1]
+    for idx in range(len(keyframes) - 1):
+        candidate_left = keyframes[idx]
+        candidate_right = keyframes[idx + 1]
+        if candidate_left["frame"] <= frame <= candidate_right["frame"]:
+            left = candidate_left
+            right = candidate_right
+            break
+
+    if left["frame"] == right["frame"]:
+        return float(right["value"])
+
+    interpolation = str(right.get("interpolation", "linear"))
+    if interpolation == "hold":
+        return float(left["value"])
+
+    span = max(1, right["frame"] - left["frame"])
+    t = (frame - left["frame"]) / float(span)
+    if interpolation == "ease_in_out":
+        t = _ease_in_out(t)
+
+    start = float(left["value"])
+    end = float(right["value"])
+    return start + ((end - start) * t)
+
+
+def apply_track_value(render_params: dict[str, Any], parameter_id: str, sampled_value: float) -> None:
+    if parameter_id == "rotation":
+        render_params["rotation"] = clamp_float(sampled_value, 0.0, 360.0, 0.0)
+        return
+
+    if parameter_id == "stroke_width":
+        render_params["stroke_width"] = clamp_float(sampled_value, 0.5, 18.0, 2.0)
+        return
+
+    if parameter_id == "fill_ratio":
+        render_params["fill_ratio"] = clamp_float(sampled_value, 0.0, 1.0, render_params.get("fill_ratio", 0.65))
+        return
+
+    if parameter_id == "symmetry":
+        render_params["symmetry"] = clamp_int(round(sampled_value), 1, 12, render_params.get("symmetry", 4))
+        return
+
+    if parameter_id.startswith("shape_counts."):
+        kind = parameter_id.split(".", 1)[1]
+        if kind in SHAPE_ORDER:
+            shape_counts = dict(render_params.get("shape_counts", {}))
+            shape_counts[kind] = clamp_int(round(sampled_value), 0, 300, shape_counts.get(kind, 0))
+            render_params["shape_counts"] = shape_counts
+            render_params["shape_count"] = sum(int(shape_counts.get(k, 0)) for k in SHAPE_ORDER)
+            render_params["total_shapes"] = render_params["shape_count"]
+        return
+
+    if parameter_id.startswith("fill_ratios."):
+        kind = parameter_id.split(".", 1)[1]
+        if kind in SHAPE_ORDER:
+            fill_ratios = dict(render_params.get("fill_ratios", {}))
+            fill_ratios[kind] = clamp_float(sampled_value, 0.0, 1.0, fill_ratios.get(kind, render_params.get("fill_ratio", 0.65)))
+            render_params["fill_ratios"] = fill_ratios
+
+
+def apply_animation_frame(base_render_params: dict[str, Any], timeline: dict[str, Any], frame: int) -> dict[str, Any]:
+    render = json.loads(json.dumps(base_render_params))
+
+    for track in timeline.get("tracks", []):
+        parameter_id = str(track.get("parameter_id", ""))
+        if not parameter_id:
+            continue
+        sampled = sample_track_value(track, frame)
+        apply_track_value(render, parameter_id, sampled)
+
+    return normalize_render_params(render, seed_override=render.get("seed"))
+
+
+def render_animation_preview(
+    *,
+    output_root: str | Path,
+    render_params: dict[str, Any],
+    canvas: dict[str, Any],
+    timeline: dict[str, Any],
+    frame: int,
+) -> dict[str, Any]:
+    out_root = ensure_output_root(output_root)
+    preview_dir = out_root / ".preview" / "animation"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+
+    base_render = normalize_render_params(render_params)
+    timeline_norm = normalize_timeline(timeline)
+    frame_idx = clamp_int(frame, 0, timeline_norm["frame_count"] - 1, 0)
+
+    preview_max_dim = int(base_render["canvas_meta"].get("preview_max_dim", 4096))
+    normalized_canvas = normalize_canvas(canvas, max_dimension=preview_max_dim)
+
+    frame_render_params = apply_animation_frame(base_render, timeline_norm, frame_idx)
+    scene = build_scene(frame_render_params, normalized_canvas)
+    signature = scene_signature(scene)
+
+    preview_path = preview_dir / f"anim_preview_f{frame_idx:05d}_{signature[:12]}.png"
+    render_scene_png(scene, preview_path)
+
+    return {
+        "preview_path": str(preview_path),
+        "scene_signature": signature,
+        "frame": frame_idx,
+        "frame_count": timeline_norm["frame_count"],
+        "fps": timeline_norm["fps"],
+        "width": normalized_canvas["width"],
+        "height": normalized_canvas["height"],
+    }
+
+
+def export_animation(
+    *,
+    output_root: str | Path,
+    render_params: dict[str, Any],
+    canvas: dict[str, Any],
+    timeline: dict[str, Any],
+    animation_name: str | None = None,
+    progress_cb: Callable[[int, int, int, str], None] | None = None,
+) -> dict[str, Any]:
+    root = ensure_output_root(output_root)
+    animations_root = ensure_output_root(root / "animations")
+
+    base_render = normalize_render_params(render_params)
+    timeline_norm = normalize_timeline(timeline)
+    frame_count = timeline_norm["frame_count"]
+
+    animation_label = slugify(animation_name or "")
+    if not animation_label:
+        animation_label = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    base_folder = animations_root / animation_label
+    export_folder = base_folder
+    suffix = 1
+    while export_folder.exists():
+        export_folder = animations_root / f"{animation_label}_{suffix:02d}"
+        suffix += 1
+
+    frames_dir = export_folder / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    export_max_dim = int(base_render["canvas_meta"].get("export_max_dim", 16384))
+    normalized_canvas = normalize_canvas(canvas, max_dimension=export_max_dim)
+
+    frame_paths: list[Path] = []
+    frame_hashes: list[str] = []
+    signature_chain = hashlib.sha256()
+
+    for frame_idx in range(frame_count):
+        frame_render_params = apply_animation_frame(base_render, timeline_norm, frame_idx)
+        scene = build_scene(frame_render_params, normalized_canvas)
+        frame_path = frames_dir / f"frame_{frame_idx + 1:06d}.png"
+        render_scene_png(scene, frame_path)
+
+        frame_hash = sha256_file(frame_path)
+        frame_paths.append(frame_path)
+        frame_hashes.append(frame_hash)
+        signature_chain.update(frame_hash.encode("utf-8"))
+
+        if progress_cb:
+            progress_cb(frame_idx + 1, frame_count, frame_idx, frame_path.name)
+
+    created_at = iso_now()
+    animation_jbt_path = export_folder / "animation.jbt"
+    animation_doc = {
+        "jbt_type": ANIMATION_JBT_TYPE,
+        "version": JBT_VERSION,
+        "created_at": created_at,
+        "name": export_folder.name,
+        "payload": {
+            "app": APP_ID,
+            "render_engine": RENDER_ENGINE,
+            "style_id": base_render.get("style_id", DEFAULT_STYLE_ID),
+            "canvas": normalized_canvas,
+            "timeline": timeline_norm,
+            "source_render_params": base_render,
+            "output_files": {
+                "frames_dir": str(frames_dir),
+                "frame_pattern": "frame_%06d.png",
+                "first_frame": str(frame_paths[0]) if frame_paths else None,
+                "last_frame": str(frame_paths[-1]) if frame_paths else None,
+            },
+            "hashes": {
+                "frames_sha256_chain": signature_chain.hexdigest(),
+                "first_frame_sha256": frame_hashes[0] if frame_hashes else None,
+                "last_frame_sha256": frame_hashes[-1] if frame_hashes else None,
+            },
+            "tags": base_render.get("tags", ["geo", "clean", "geometric", "animation"]),
+        },
+    }
+    animation_jbt_path.write_text(json.dumps(animation_doc, indent=2), encoding="utf-8")
+
+    index_record = {
+        "created_at": created_at,
+        "animation_name": export_folder.name,
+        "style_id": base_render.get("style_id", DEFAULT_STYLE_ID),
+        "render_engine": RENDER_ENGINE,
+        "canvas": normalized_canvas,
+        "timeline": {
+            "fps": timeline_norm["fps"],
+            "frame_count": timeline_norm["frame_count"],
+            "duration_seconds": timeline_norm["duration_seconds"],
+        },
+        "frames_dir": str(frames_dir),
+        "animation_jbt_path": str(animation_jbt_path),
+        "frames_sha256_chain": signature_chain.hexdigest(),
+    }
+    append_index_record(animations_root / "index.jbtl", index_record)
+
+    return {
+        "animation_name": export_folder.name,
+        "output_root": str(export_folder),
+        "frames_dir": str(frames_dir),
+        "frame_count": frame_count,
+        "animation_jbt_path": str(animation_jbt_path),
+        "first_frame": str(frame_paths[0]) if frame_paths else "",
+        "last_frame": str(frame_paths[-1]) if frame_paths else "",
+        "frames_sha256_chain": signature_chain.hexdigest(),
     }
