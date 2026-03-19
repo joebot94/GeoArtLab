@@ -23,13 +23,17 @@ class CoreTests(unittest.TestCase):
             "shape_family": "mixed",
             "shape_counts": {"circle": 12, "triangle": 8, "rectangle": 6, "line": 4},
             "symmetry": 1,
+            "symmetry_mode": "radial",
             "rotation": 0,
             "scale_range": 0.4,
             "stroke_width": 2,
+            "stroke_widths": {"circle": 1.0, "triangle": 2.5, "rectangle": 4.0, "line": 7.0},
             "fill_ratio": 0.65,
+            "fill_ratios": {"circle": 1.0, "triangle": 0.8, "rectangle": 0.4, "line": 0.0},
             "palette_id": "synthwave",
             "palette_colors": ["#2D1E2F", "#D7263D", "#F46036", "#2E294E", "#1B998B"],
             "background_style": "paper",
+            "color_mode": "seed_derived_index",
             "angle_ranges_deg": {
                 "circle": {"min": 0, "max": 0},
                 "triangle": {"min": 20, "max": 40},
@@ -42,7 +46,14 @@ class CoreTests(unittest.TestCase):
                 "rectangle": {"x_min": 0.5, "x_max": 0.75, "y_min": 0.5, "y_max": 0.75},
                 "line": {"x_min": 0.75, "x_max": 1.0, "y_min": 0.75, "y_max": 1.0},
             },
-            "canvas_meta": {"lock_ratio": True, "ratio_preset": "1:1", "long_edge_px": 1024},
+            "canvas_meta": {
+                "lock_ratio": True,
+                "ratio_preset": "1:1",
+                "long_edge_px": 1024,
+                "resolution_preset": "1080p",
+                "preview_max_dim": 4096,
+                "export_max_dim": 16384,
+            },
             "seed": 42,
         }
         self.canvas = {"width": 512, "height": 512}
@@ -76,6 +87,11 @@ class CoreTests(unittest.TestCase):
         mixed = core.normalize_render_params({"shape_family": "mixed", "shape_count": 10})["shape_counts"]
         self.assertEqual(mixed, {"circle": 3, "triangle": 3, "rectangle": 2, "line": 2})
 
+    def test_total_shapes_legacy_mapping(self) -> None:
+        mixed = core.normalize_render_params({"shape_family": "mixed", "total_shapes": 11})
+        self.assertEqual(mixed["shape_count"], 11)
+        self.assertEqual(mixed["shape_counts"], {"circle": 3, "triangle": 3, "rectangle": 3, "line": 2})
+
     def test_per_shape_counts_match_with_symmetry_one(self) -> None:
         scene = core.build_scene(self.render, self.canvas)
         counts = Counter(shape["kind"] for shape in scene["shapes"])
@@ -83,6 +99,18 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(counts["triangle"], 8)
         self.assertEqual(counts["rectangle"], 6)
         self.assertEqual(counts["line"], 4)
+
+    def test_none_symmetry_mode_uses_random_non_radial_placement(self) -> None:
+        params = dict(self.render)
+        params["symmetry"] = 6
+        params["symmetry_mode"] = "none"
+        scene = core.build_scene(params, self.canvas)
+        counts = Counter(shape["kind"] for shape in scene["shapes"])
+        self.assertEqual(counts["circle"], 12)
+        self.assertEqual(counts["triangle"], 8)
+        self.assertEqual(counts["rectangle"], 6)
+        self.assertEqual(counts["line"], 4)
+        self.assertEqual(scene["params"]["symmetry_mode"], "none")
 
     def test_region_and_angle_constraints(self) -> None:
         scene = core.build_scene(self.render, self.canvas)
@@ -108,6 +136,48 @@ class CoreTests(unittest.TestCase):
             self.assertGreaterEqual(angle_deg, angle["min"] - 1e-3)
             self.assertLessEqual(angle_deg, angle["max"] + 1e-3)
 
+    def test_per_shape_fill_ratios_enforced(self) -> None:
+        scene = core.build_scene(self.render, self.canvas)
+        for shape in scene["shapes"]:
+            if shape["kind"] == "circle":
+                self.assertTrue(shape["filled"])
+            if shape["kind"] == "line":
+                self.assertFalse(shape["filled"])
+
+    def test_per_shape_stroke_widths_enforced(self) -> None:
+        scene = core.build_scene(self.render, self.canvas)
+        expected = self.render["stroke_widths"]
+        for shape in scene["shapes"]:
+            self.assertAlmostEqual(shape["stroke_width"], expected[shape["kind"]], delta=1e-6)
+
+    def test_new_color_modes_and_backgrounds(self) -> None:
+        palette = self.render["palette_colors"]
+        for color_mode in ["palette_lock", "palette_rotate_per_ring", "seed_derived_index"]:
+            params = dict(self.render)
+            params["color_mode"] = color_mode
+            params["background_style"] = "pure_black"
+            scene = core.build_scene(params, self.canvas)
+            self.assertEqual(scene["background"], "#000000")
+            self.assertTrue(scene["shapes"])
+            for shape in scene["shapes"][:20]:
+                self.assertIn(shape["color"], palette)
+
+    def test_canvas_meta_policy(self) -> None:
+        params = core.normalize_render_params(
+            {
+                "canvas_meta": {
+                    "preview_max_dim": 50000,
+                    "export_max_dim": 50000,
+                }
+            }
+        )
+        self.assertEqual(params["canvas_meta"]["preview_max_dim"], 4096)
+        self.assertEqual(params["canvas_meta"]["export_max_dim"], 16384)
+
+        preview_canvas = core.normalize_canvas({"width": 9000, "height": 7000}, max_dimension=4096)
+        self.assertEqual(preview_canvas["width"], 4096)
+        self.assertEqual(preview_canvas["height"], 4096)
+
     def test_export_batch_writes_png_svg_jbt_and_index(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             items = core.export_batch(
@@ -132,7 +202,11 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(jbt["jbt_type"], "geo_art_piece")
                 self.assertEqual(jbt["version"], "1.0")
                 self.assertIn("payload", jbt)
+                self.assertEqual(jbt["payload"].get("render_engine"), "python")
                 self.assertIn("shape_counts", jbt["payload"]["parameters"])
+                self.assertIn("symmetry_mode", jbt["payload"]["parameters"])
+                self.assertIn("stroke_widths", jbt["payload"]["parameters"])
+                self.assertIn("fill_ratios", jbt["payload"]["parameters"])
                 self.assertIn("angle_ranges_deg", jbt["payload"]["parameters"])
                 self.assertIn("placement_regions", jbt["payload"]["parameters"])
 
@@ -140,6 +214,54 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(index_path.exists())
             lines = [line for line in index_path.read_text(encoding="utf-8").splitlines() if line.strip()]
             self.assertEqual(len(lines), 3)
+            index_records = [json.loads(line) for line in lines]
+            self.assertTrue(all(record.get("render_engine") == "python" for record in index_records))
+
+    def test_timeline_interpolation_and_export_animation(self) -> None:
+        timeline = {
+            "fps": 10,
+            "frame_count": 5,
+            "tracks": [
+                {
+                    "parameter_id": "rotation",
+                    "keyframes": [
+                        {"frame": 0, "value": 0, "interpolation": "linear"},
+                        {"frame": 4, "value": 180, "interpolation": "linear"},
+                    ],
+                },
+                {
+                    "parameter_id": "shape_counts.circle",
+                    "keyframes": [
+                        {"frame": 0, "value": 4, "interpolation": "hold"},
+                        {"frame": 4, "value": 8, "interpolation": "hold"},
+                    ],
+                },
+            ],
+        }
+        timeline_norm = core.normalize_timeline(timeline)
+        value_mid = core.sample_track_value(timeline_norm["tracks"][0], 2)
+        self.assertAlmostEqual(value_mid, 90.0, delta=0.001)
+
+        with tempfile.TemporaryDirectory() as td:
+            result = core.export_animation(
+                output_root=td,
+                render_params=self.render,
+                canvas=self.canvas,
+                timeline=timeline,
+                animation_name="test-anim",
+            )
+            self.assertEqual(result["frame_count"], 5)
+            self.assertTrue(Path(result["animation_jbt_path"]).exists())
+            frames = sorted(Path(result["frames_dir"]).glob("frame_*.png"))
+            self.assertEqual(len(frames), 5)
+            animation_jbt = json.loads(Path(result["animation_jbt_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(animation_jbt["payload"].get("render_engine"), "python")
+
+            animations_index = Path(td) / "animations" / "index.jbtl"
+            self.assertTrue(animations_index.exists())
+            lines = [line for line in animations_index.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(json.loads(lines[0]).get("render_engine"), "python")
 
 
 if __name__ == "__main__":

@@ -3,30 +3,75 @@ import Foundation
 
 @MainActor
 final class AppState: ObservableObject {
-    @Published var params = RenderParameters()
+    @Published var params = RenderParameters() {
+        didSet {
+            if !isApplyingTotalShapeRebalance {
+                requestedTotalShapes = params.totalShapes
+            }
+        }
+    }
     @Published var canvas = CanvasSettings()
+    @Published var animation = AnimationSettings()
+
     @Published var baseSeed = 42
     @Published var repeats = 10
     @Published var outputRoot = "\(NSHomeDirectory())/JBT/geo_art_lab"
 
+    @Published var requestedTotalShapes = 80
+
     @Published var previewImage: NSImage?
+    @Published var animationPreviewImage: NSImage?
+
     @Published var statusText = "Waiting for worker..."
     @Published var workerConnected = false
+
     @Published var isExporting = false
     @Published var exportProgress: Double = 0
     @Published var exportStatusText = ""
     @Published var exportedFiles: [String] = []
+
+    @Published var isExportingAnimation = false
+    @Published var animationExportProgress: Double = 0
+    @Published var animationExportStatusText = ""
+    @Published var animationExportedFiles: [String] = []
+
     @Published var lastErrorText = ""
 
     private let client: PythonWorkerClient
+    private let nexusBridge: NexusBridgeProtocol
+    private let metalPreviewBackend = MetalPreviewBackend()
     private var previewDebounceTask: Task<Void, Never>?
+    private var animationPreviewDebounceTask: Task<Void, Never>?
     private var hasStarted = false
+    private var isApplyingTotalShapeRebalance = false
+    private var previewRequestSerial = 0
+    private var animationPreviewRequestSerial = 0
 
-    init(client: PythonWorkerClient = PythonWorkerClient()) {
+    var activeRenderEngine: RenderEngine {
+        FeatureFlags.renderEngine
+    }
+
+    init(
+        client: PythonWorkerClient = PythonWorkerClient(),
+        nexusBridge: NexusBridgeProtocol = MockNexusBridge()
+    ) {
         self.client = client
+        self.nexusBridge = nexusBridge
+
+        self.requestedTotalShapes = params.totalShapes
+        self.animation.tracks = AnimationTrackFactory.makeDefaultTracks(from: params)
+        self.animation.clamp()
+        alignTrackEndpointsWithFrameCount()
+
         self.client.onEvent = { [weak self] event in
             Task { @MainActor in
                 self?.handleEvent(event)
+            }
+        }
+
+        self.nexusBridge.onCommand = { [weak self] command in
+            Task { @MainActor in
+                self?.handleNexusCommand(command)
             }
         }
     }
@@ -34,17 +79,24 @@ final class AppState: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
-        statusText = "Launching Python worker..."
+        statusText = "Launching worker... renderer=\(activeRenderEngine.rawValue)"
         client.startIfNeeded()
         sendHello()
+        nexusBridge.start()
+
+        canvas.applyResolutionPreset()
+        canvas.applyRatioLock()
+        alignTrackEndpointsWithFrameCount()
+
         schedulePreview()
+        scheduleAnimationPreview()
     }
 
     func schedulePreview() {
         previewDebounceTask?.cancel()
         previewDebounceTask = Task { [weak self] in
             do {
-                try await Task.sleep(nanoseconds: 120_000_000)
+                try await Task.sleep(nanoseconds: 300_000_000)
             } catch {
                 return
             }
@@ -53,9 +105,33 @@ final class AppState: ObservableObject {
         }
     }
 
+    func scheduleAnimationPreview() {
+        animationPreviewDebounceTask?.cancel()
+        animationPreviewDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 180_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            self?.requestAnimationPreview(immediate: false)
+        }
+    }
+
     func requestPreview() {
+        if activeRenderEngine == .swiftCore, FeatureFlags.metalPreviewEnabled {
+            if let frame = metalPreviewBackend.renderPreview(params: params, canvas: canvas, seed: params.seed) {
+                previewImage = frame.image
+                statusText = "Preview ready (Swift Metal: \(frame.sceneShapeCount) shapes, \(Int(frame.renderMillis))ms)"
+                workerConnected = metalPreviewBackend.isAvailable
+                return
+            }
+            statusText = "Swift Metal preview unavailable, falling back to python worker"
+        }
+        previewRequestSerial += 1
+        let requestSerial = previewRequestSerial
         let payload = previewPayload(seed: params.seed)
-        statusText = "Rendering preview..."
+        statusText = "Rendering preview (python worker)..."
 
         client.sendRequest(type: "render_preview", payload: payload) { [weak self] result in
             switch result {
@@ -64,14 +140,14 @@ final class AppState: ObservableObject {
                 let previewPath = payload?["preview_path"] as? String
                 Task { @MainActor in
                     guard let self else { return }
+                    guard requestSerial == self.previewRequestSerial else { return }
                     guard let previewPath else {
                         self.lastErrorText = "Preview response missing preview_path"
                         self.statusText = "Preview failed"
                         return
                     }
 
-                    let previewURL = URL(fileURLWithPath: previewPath)
-                    if let image = NSImage(contentsOf: previewURL) {
+                    if let image = NSImage(contentsOf: URL(fileURLWithPath: previewPath)) {
                         self.previewImage = image
                         self.statusText = "Preview ready"
                     } else {
@@ -79,11 +155,64 @@ final class AppState: ObservableObject {
                     }
                 }
             case .failure(let error):
-                let errorMessage = error.localizedDescription
                 Task { @MainActor in
                     guard let self else { return }
-                    self.lastErrorText = errorMessage
+                    guard requestSerial == self.previewRequestSerial else { return }
+                    self.lastErrorText = error.localizedDescription
                     self.statusText = "Preview failed"
+                }
+            }
+        }
+    }
+
+    func requestAnimationPreview(immediate: Bool = true) {
+        if immediate {
+            animationPreviewDebounceTask?.cancel()
+        }
+        if activeRenderEngine == .swiftCore, FeatureFlags.metalPreviewEnabled {
+            let frameParams = resolvedRenderParametersForAnimationFrame(animation.scrubFrame)
+            if let frame = metalPreviewBackend.renderPreview(params: frameParams, canvas: canvas, seed: frameParams.seed) {
+                animationPreviewImage = frame.image
+                statusText = "Animation preview (Swift Metal) frame \(animation.scrubFrame + 1)"
+                return
+            }
+            statusText = "Swift Metal animation preview unavailable, falling back to python worker"
+        }
+        animationPreviewRequestSerial += 1
+        let requestSerial = animationPreviewRequestSerial
+        animation.clamp()
+        let payload: [String: Any] = [
+            "params": renderPayload(seed: params.seed),
+            "canvas": [
+                "width": canvas.resolvedWidthPreview,
+                "height": canvas.resolvedHeightPreview,
+            ],
+            "timeline": animationTimelinePayload(),
+            "frame": animation.scrubFrame,
+            "output_root": outputRoot,
+        ]
+
+        client.sendRequest(type: "render_animation_preview", payload: payload) { [weak self] result in
+            switch result {
+            case .success(let response):
+                let payload = response["payload"] as? [String: Any]
+                let previewPath = payload?["preview_path"] as? String
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard requestSerial == self.animationPreviewRequestSerial else { return }
+                    guard let previewPath else {
+                        self.lastErrorText = "Animation preview missing preview_path"
+                        return
+                    }
+                    if let image = NSImage(contentsOf: URL(fileURLWithPath: previewPath)) {
+                        self.animationPreviewImage = image
+                    }
+                }
+            case .failure(let error):
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard requestSerial == self.animationPreviewRequestSerial else { return }
+                    self.lastErrorText = error.localizedDescription
                 }
             }
         }
@@ -101,9 +230,9 @@ final class AppState: ObservableObject {
             "output_root": outputRoot,
             "render": baseRenderPayload(),
             "canvas": [
-                "width": canvas.resolvedWidth,
-                "height": canvas.resolvedHeight
-            ]
+                "width": canvas.resolvedWidthExport,
+                "height": canvas.resolvedHeightExport,
+            ],
         ]
 
         client.sendRequest(type: "export_batch", payload: payload) { [weak self] result in
@@ -129,13 +258,55 @@ final class AppState: ObservableObject {
                     }
                 }
             case .failure(let error):
-                let errorMessage = error.localizedDescription
                 Task { @MainActor in
                     guard let self else { return }
                     self.isExporting = false
-                    self.lastErrorText = errorMessage
+                    self.lastErrorText = error.localizedDescription
                     self.exportStatusText = "Export failed"
                     self.statusText = "Export failed"
+                }
+            }
+        }
+    }
+
+    func exportAnimation() {
+        isExportingAnimation = true
+        animationExportProgress = 0
+        animationExportStatusText = "Exporting animation..."
+        animationExportedFiles = []
+
+        animation.clamp()
+        let payload: [String: Any] = [
+            "output_root": outputRoot,
+            "canvas": [
+                "width": canvas.resolvedWidthExport,
+                "height": canvas.resolvedHeightExport,
+            ],
+            "render": renderPayload(seed: params.seed),
+            "timeline": animationTimelinePayload(),
+            "animation_name": animation.animationName,
+        ]
+
+        client.sendRequest(type: "export_animation", payload: payload) { [weak self] result in
+            switch result {
+            case .success(let response):
+                let payload = response["payload"] as? [String: Any] ?? [:]
+                let framesDir = payload["frames_dir"] as? String ?? ""
+                let jbt = payload["animation_jbt_path"] as? String ?? ""
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.isExportingAnimation = false
+                    self.animationExportProgress = 1
+                    self.animationExportStatusText = "Animation export complete"
+                    self.animationExportedFiles = [framesDir, jbt].filter { !$0.isEmpty }
+                    self.statusText = "Animation export complete"
+                }
+            case .failure(let error):
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.isExportingAnimation = false
+                    self.lastErrorText = error.localizedDescription
+                    self.animationExportStatusText = "Animation export failed"
                 }
             }
         }
@@ -151,15 +322,216 @@ final class AppState: ObservableObject {
                     self.statusText = "Worker reachable"
                 }
             case .failure(let error):
-                let errorMessage = error.localizedDescription
                 Task { @MainActor in
                     guard let self else { return }
                     self.workerConnected = false
-                    self.lastErrorText = errorMessage
+                    self.lastErrorText = error.localizedDescription
                     self.statusText = "Worker ping failed"
                 }
             }
         }
+    }
+
+    func applyGlobalFillRatioToAllShapes() {
+        params.fillRatios.setAll(params.fillRatio)
+    }
+
+    func applyGlobalStrokeWidthToAllShapes() {
+        params.strokeWidths.setAll(params.strokeWidth)
+    }
+
+    func randomizeSeed() {
+        params.seed = Int.random(in: 0...1_000_000)
+    }
+
+    func resetAll() {
+        let existingOutputRoot = outputRoot
+        params = RenderParameters()
+        canvas = CanvasSettings()
+        animation = AnimationSettings()
+        animation.tracks = AnimationTrackFactory.makeDefaultTracks(from: params)
+        requestedTotalShapes = params.totalShapes
+        outputRoot = existingOutputRoot
+        canvas.applyResolutionPreset()
+        canvas.applyRatioLock()
+        schedulePreview()
+        scheduleAnimationPreview()
+    }
+
+    @discardableResult
+    func savePreset() -> String? {
+        let fm = FileManager.default
+        let expandedRoot = NSString(string: outputRoot).expandingTildeInPath
+        let presetsDir = URL(fileURLWithPath: expandedRoot).appendingPathComponent("presets", isDirectory: true)
+        do {
+            try fm.createDirectory(at: presetsDir, withIntermediateDirectories: true)
+            let ts = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let presetURL = presetsDir.appendingPathComponent("preset_\(ts).json")
+            let payload: [String: Any] = [
+                "created_at": ISO8601DateFormatter().string(from: Date()),
+                "params": renderPayload(seed: params.seed),
+                "canvas": [
+                    "width": canvas.resolvedWidthExport,
+                    "height": canvas.resolvedHeightExport,
+                ],
+                "animation": animationTimelinePayload(),
+            ]
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: presetURL, options: .atomic)
+            statusText = "Preset saved"
+            return presetURL.path
+        } catch {
+            lastErrorText = "Preset save failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func rebalanceShapeCountsToRequestedTotal() {
+        rebalanceShapeCounts(total: requestedTotalShapes)
+    }
+
+    func rebalanceShapeCounts(total: Int) {
+        let clampedTotal = max(0, min(total, 1200))
+        let current = [
+            max(0, params.shapeCounts.circle),
+            max(0, params.shapeCounts.triangle),
+            max(0, params.shapeCounts.rectangle),
+            max(0, params.shapeCounts.line),
+        ]
+        let currentTotal = current.reduce(0, +)
+
+        var next = [Int](repeating: 0, count: 4)
+
+        if clampedTotal == 0 {
+            next = [0, 0, 0, 0]
+        } else if currentTotal == 0 {
+            let base = clampedTotal / 4
+            var remainder = clampedTotal % 4
+            for idx in 0..<4 {
+                next[idx] = base
+                if remainder > 0 {
+                    next[idx] += 1
+                    remainder -= 1
+                }
+            }
+        } else {
+            var distributed = 0
+            for idx in 0..<4 {
+                let scaled = Double(current[idx]) / Double(currentTotal) * Double(clampedTotal)
+                next[idx] = Int(floor(scaled))
+                distributed += next[idx]
+            }
+            var remainder = clampedTotal - distributed
+            var idx = 0
+            while remainder > 0 {
+                next[idx % 4] += 1
+                remainder -= 1
+                idx += 1
+            }
+        }
+
+        isApplyingTotalShapeRebalance = true
+        params.shapeCounts.circle = next[0]
+        params.shapeCounts.triangle = next[1]
+        params.shapeCounts.rectangle = next[2]
+        params.shapeCounts.line = next[3]
+        requestedTotalShapes = params.totalShapes
+        isApplyingTotalShapeRebalance = false
+    }
+
+    func applyResolutionPreset() {
+        canvas.applyResolutionPreset()
+    }
+
+    func applyLongEdge() {
+        canvas.applyLongEdge()
+    }
+
+    func applyRatioLock() {
+        canvas.applyRatioLock()
+    }
+
+    func resetAnimationTracksFromCurrentParams() {
+        animation.tracks = AnimationTrackFactory.makeDefaultTracks(from: params)
+        alignTrackEndpointsWithFrameCount()
+        animation.clamp()
+    }
+
+    func alignTrackEndpointsWithFrameCount() {
+        let lastFrame = max(0, animation.frameCount - 1)
+        for trackIndex in animation.tracks.indices {
+            var keyframes = animation.tracks[trackIndex].keyframes
+            if keyframes.isEmpty {
+                keyframes = [TimelineKeyframe(frame: 0, value: trackDefaultValue(animation.tracks[trackIndex]), interpolation: .linear)]
+            }
+            for idx in keyframes.indices {
+                keyframes[idx].frame = min(max(keyframes[idx].frame, 0), lastFrame)
+                keyframes[idx].value = normalizedTrackValue(animation.tracks[trackIndex], keyframes[idx].value)
+            }
+            keyframes.sort { $0.frame < $1.frame }
+            if keyframes.count == 1 {
+                keyframes.append(TimelineKeyframe(frame: lastFrame, value: keyframes[0].value, interpolation: keyframes[0].interpolation))
+            }
+            animation.tracks[trackIndex].keyframes = keyframes
+        }
+        animation.scrubFrame = min(max(animation.scrubFrame, 0), lastFrame)
+    }
+
+    func addKeyframe(trackID: String, atFrame frame: Int) {
+        guard let trackIndex = animation.tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        let track = animation.tracks[trackIndex]
+        let lastFrame = max(0, animation.frameCount - 1)
+        let clampedFrame = min(max(frame, 0), lastFrame)
+        let value = valueForTrack(track, atFrame: clampedFrame)
+        animation.tracks[trackIndex].keyframes.append(
+            TimelineKeyframe(frame: clampedFrame, value: value, interpolation: .linear)
+        )
+        animation.tracks[trackIndex].keyframes.sort { $0.frame < $1.frame }
+    }
+
+    func deleteKeyframe(trackID: String, keyframeID: UUID) {
+        guard let trackIndex = animation.tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        animation.tracks[trackIndex].keyframes.removeAll { $0.id == keyframeID }
+        if animation.tracks[trackIndex].keyframes.isEmpty {
+            animation.tracks[trackIndex].keyframes = [TimelineKeyframe(frame: 0, value: trackDefaultValue(animation.tracks[trackIndex]), interpolation: .linear)]
+        }
+        alignTrackEndpointsWithFrameCount()
+    }
+
+    @discardableResult
+    func duplicateKeyframe(trackID: String, keyframeID: UUID, targetFrame: Int? = nil) -> UUID? {
+        guard let trackIndex = animation.tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
+        guard let source = animation.tracks[trackIndex].keyframes.first(where: { $0.id == keyframeID }) else { return nil }
+        let lastFrame = max(0, animation.frameCount - 1)
+        let resolvedTargetFrame = targetFrame ?? (source.frame + 1)
+        let duplicated = TimelineKeyframe(
+            frame: min(max(resolvedTargetFrame, 0), lastFrame),
+            value: source.value,
+            interpolation: source.interpolation
+        )
+        animation.tracks[trackIndex].keyframes.append(duplicated)
+        animation.tracks[trackIndex].keyframes.sort { $0.frame < $1.frame }
+        return duplicated.id
+    }
+
+    func updateKeyframe(trackID: String, keyframeID: UUID, frame: Int? = nil, value: Double? = nil, interpolation: TrackInterpolation? = nil) {
+        guard let trackIndex = animation.tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        guard let keyframeIndex = animation.tracks[trackIndex].keyframes.firstIndex(where: { $0.id == keyframeID }) else { return }
+
+        if let frame {
+            let lastFrame = max(0, animation.frameCount - 1)
+            animation.tracks[trackIndex].keyframes[keyframeIndex].frame = min(max(frame, 0), lastFrame)
+        }
+        if let value {
+            animation.tracks[trackIndex].keyframes[keyframeIndex].value = normalizedTrackValue(
+                animation.tracks[trackIndex],
+                value
+            )
+        }
+        if let interpolation {
+            animation.tracks[trackIndex].keyframes[keyframeIndex].interpolation = interpolation
+        }
+        animation.tracks[trackIndex].keyframes.sort { $0.frame < $1.frame }
     }
 
     private func sendHello() {
@@ -172,11 +544,10 @@ final class AppState: ObservableObject {
                     self.statusText = "Worker ready"
                 }
             case .failure(let error):
-                let errorMessage = error.localizedDescription
                 Task { @MainActor in
                     guard let self else { return }
                     self.workerConnected = false
-                    self.lastErrorText = errorMessage
+                    self.lastErrorText = error.localizedDescription
                     self.statusText = "Worker failed to start"
                 }
             }
@@ -193,13 +564,18 @@ final class AppState: ObservableObject {
             if total > 0 {
                 exportProgress = completed / total
             }
-            let seedText: String
-            if let seed = payload["seed"] as? Int {
-                seedText = " seed \(seed)"
-            } else {
-                seedText = ""
+            exportStatusText = "Exporting \(Int(completed))/\(Int(total))"
+            return
+        }
+
+        if type == "animation_export_progress",
+           let payload = event["payload"] as? [String: Any],
+           let completed = payload["completed"] as? Double,
+           let total = payload["total"] as? Double {
+            if total > 0 {
+                animationExportProgress = completed / total
             }
-            exportStatusText = "Exporting \(Int(completed))/\(Int(total))\(seedText)"
+            animationExportStatusText = "Animation export \(Int(completed))/\(Int(total))"
             return
         }
 
@@ -233,9 +609,10 @@ final class AppState: ObservableObject {
         [
             "params": renderPayload(seed: seed),
             "canvas": [
-                "width": canvas.resolvedWidth,
-                "height": canvas.resolvedHeight
-            ]
+                "width": canvas.resolvedWidthPreview,
+                "height": canvas.resolvedHeightPreview,
+            ],
+            "output_root": outputRoot,
         ]
     }
 
@@ -249,12 +626,26 @@ final class AppState: ObservableObject {
         [
             "style_id": params.styleID,
             "shape_family": params.shapeFamily.rawValue,
-            "shape_count": max(1, min(params.shapeCounts.total, 1200)),
+            "shape_count": max(1, min(params.totalShapes, 1200)),
+            "total_shapes": max(1, min(params.totalShapes, 1200)),
             "symmetry": max(1, min(params.symmetry, 12)),
+            "symmetry_mode": params.symmetryMode.rawValue,
             "rotation": params.rotation,
             "scale_range": params.scaleRange,
             "stroke_width": params.strokeWidth,
+            "stroke_widths": [
+                "circle": max(0.5, min(params.strokeWidths.circle, 18)),
+                "triangle": max(0.5, min(params.strokeWidths.triangle, 18)),
+                "rectangle": max(0.5, min(params.strokeWidths.rectangle, 18)),
+                "line": max(0.5, min(params.strokeWidths.line, 18)),
+            ],
             "fill_ratio": params.fillRatio,
+            "fill_ratios": [
+                "circle": max(0, min(params.fillRatios.circle, 1)),
+                "triangle": max(0, min(params.fillRatios.triangle, 1)),
+                "rectangle": max(0, min(params.fillRatios.rectangle, 1)),
+                "line": max(0, min(params.fillRatios.line, 1)),
+            ],
             "palette_id": params.palette.rawValue,
             "palette_colors": PaletteLibrary.colors(for: params),
             "color_mode": params.colorMode.rawValue,
@@ -263,47 +654,264 @@ final class AppState: ObservableObject {
                 "circle": max(0, min(params.shapeCounts.circle, 300)),
                 "triangle": max(0, min(params.shapeCounts.triangle, 300)),
                 "rectangle": max(0, min(params.shapeCounts.rectangle, 300)),
-                "line": max(0, min(params.shapeCounts.line, 300))
+                "line": max(0, min(params.shapeCounts.line, 300)),
             ],
             "angle_ranges_deg": [
                 "circle": ["min": params.angleRanges.circle.minDeg, "max": params.angleRanges.circle.maxDeg],
                 "triangle": ["min": params.angleRanges.triangle.minDeg, "max": params.angleRanges.triangle.maxDeg],
                 "rectangle": ["min": params.angleRanges.rectangle.minDeg, "max": params.angleRanges.rectangle.maxDeg],
-                "line": ["min": params.angleRanges.line.minDeg, "max": params.angleRanges.line.maxDeg]
+                "line": ["min": params.angleRanges.line.minDeg, "max": params.angleRanges.line.maxDeg],
             ],
             "placement_regions": [
                 "circle": [
                     "x_min": params.placementRegions.circle.xMin,
                     "x_max": params.placementRegions.circle.xMax,
                     "y_min": params.placementRegions.circle.yMin,
-                    "y_max": params.placementRegions.circle.yMax
+                    "y_max": params.placementRegions.circle.yMax,
                 ],
                 "triangle": [
                     "x_min": params.placementRegions.triangle.xMin,
                     "x_max": params.placementRegions.triangle.xMax,
                     "y_min": params.placementRegions.triangle.yMin,
-                    "y_max": params.placementRegions.triangle.yMax
+                    "y_max": params.placementRegions.triangle.yMax,
                 ],
                 "rectangle": [
                     "x_min": params.placementRegions.rectangle.xMin,
                     "x_max": params.placementRegions.rectangle.xMax,
                     "y_min": params.placementRegions.rectangle.yMin,
-                    "y_max": params.placementRegions.rectangle.yMax
+                    "y_max": params.placementRegions.rectangle.yMax,
                 ],
                 "line": [
                     "x_min": params.placementRegions.line.xMin,
                     "x_max": params.placementRegions.line.xMax,
                     "y_min": params.placementRegions.line.yMin,
-                    "y_max": params.placementRegions.line.yMax
-                ]
+                    "y_max": params.placementRegions.line.yMax,
+                ],
             ],
             "canvas_meta": [
                 "lock_ratio": canvas.lockRatio,
                 "ratio_preset": canvas.ratioPreset.rawValue,
-                "long_edge_px": canvas.clampedLongEdge
+                "long_edge_px": canvas.clampedLongEdge,
+                "resolution_preset": canvas.resolutionPreset.rawValue,
+                "preview_max_dim": canvas.clampedPreviewMaxDim,
+                "export_max_dim": canvas.clampedExportMaxDim,
             ],
             "seed": seed,
-            "tags": ["geo", "clean", "geometric"]
+            "tags": ["geo", "clean", "geometric"],
         ]
+    }
+
+    private func animationTimelinePayload() -> [String: Any] {
+        let frameCount = max(1, min(animation.frameCount, 4096))
+        let fps = max(1, min(animation.fps, 120))
+
+        let tracks: [[String: Any]] = animation.tracks.compactMap { track in
+            guard track.enabled else { return nil }
+            let keyframes = normalizedKeyframes(for: track, frameCount: frameCount)
+            return [
+                "parameter_id": track.id,
+                "keyframes": keyframes.map { key in
+                    [
+                        "frame": key.frame,
+                        "value": key.value,
+                        "interpolation": key.interpolation.rawValue,
+                    ]
+                },
+            ]
+        }
+
+        return [
+            "fps": fps,
+            "frame_count": frameCount,
+            "tracks": tracks,
+        ]
+    }
+
+    private func normalizedTrackValue(_ track: AnimationTrack, _ value: Double) -> Double {
+        let clamped = min(max(value, track.minValue), track.maxValue)
+        if track.isInteger {
+            return Double(Int(round(clamped)))
+        }
+        return clamped
+    }
+
+    private func normalizedKeyframes(for track: AnimationTrack, frameCount: Int) -> [TimelineKeyframe] {
+        let lastFrame = max(0, frameCount - 1)
+        var keyframes = track.keyframes
+        if keyframes.isEmpty {
+            let value = trackDefaultValue(track)
+            return [
+                TimelineKeyframe(frame: 0, value: value, interpolation: .linear),
+                TimelineKeyframe(frame: lastFrame, value: value, interpolation: .linear),
+            ]
+        }
+        for idx in keyframes.indices {
+            keyframes[idx].frame = min(max(keyframes[idx].frame, 0), lastFrame)
+            keyframes[idx].value = normalizedTrackValue(track, keyframes[idx].value)
+        }
+        keyframes.sort { $0.frame < $1.frame }
+        if keyframes.count == 1 {
+            keyframes.append(
+                TimelineKeyframe(
+                    frame: lastFrame,
+                    value: keyframes[0].value,
+                    interpolation: keyframes[0].interpolation
+                )
+            )
+        }
+        return keyframes
+    }
+
+    private func valueForTrack(_ track: AnimationTrack, atFrame frame: Int) -> Double {
+        let keyframes = normalizedKeyframes(for: track, frameCount: animation.frameCount)
+        guard let first = keyframes.first, let last = keyframes.last else {
+            return trackDefaultValue(track)
+        }
+        if frame <= first.frame { return first.value }
+        if frame >= last.frame { return last.value }
+
+        for idx in 0..<(keyframes.count - 1) {
+            let left = keyframes[idx]
+            let right = keyframes[idx + 1]
+            if frame < left.frame || frame > right.frame { continue }
+            if frame == left.frame { return left.value }
+            if frame == right.frame { return right.value }
+
+            let span = max(1, right.frame - left.frame)
+            var t = Double(frame - left.frame) / Double(span)
+            switch left.interpolation {
+            case .hold:
+                t = 0
+            case .linear:
+                break
+            case .easeIn:
+                t = t * t
+            case .easeOut:
+                t = t * (2 - t)
+            case .easeInOut:
+                t = t < 0.5 ? (2 * t * t) : (-1 + (4 - 2 * t) * t)
+            case .bounce:
+                if t < 1 / 2.75 {
+                    t = 7.5625 * t * t
+                } else if t < 2 / 2.75 {
+                    let n = t - (1.5 / 2.75)
+                    t = (7.5625 * n * n) + 0.75
+                } else if t < 2.5 / 2.75 {
+                    let n = t - (2.25 / 2.75)
+                    t = (7.5625 * n * n) + 0.9375
+                } else {
+                    let n = t - (2.625 / 2.75)
+                    t = (7.5625 * n * n) + 0.984375
+                }
+            }
+            return normalizedTrackValue(track, left.value + ((right.value - left.value) * t))
+        }
+        return trackDefaultValue(track)
+    }
+
+    private func trackDefaultValue(_ track: AnimationTrack) -> Double {
+        switch track.id {
+        case "rotation": return params.rotation
+        case "stroke_width": return params.strokeWidth
+        case "fill_ratio": return params.fillRatio
+        case "symmetry": return Double(params.symmetry)
+        case let id where id.hasPrefix("shape_counts."):
+            let kind = id.replacingOccurrences(of: "shape_counts.", with: "")
+            switch kind {
+            case "circle": return Double(params.shapeCounts.circle)
+            case "triangle": return Double(params.shapeCounts.triangle)
+            case "rectangle": return Double(params.shapeCounts.rectangle)
+            case "line": return Double(params.shapeCounts.line)
+            default: return 0
+            }
+        case let id where id.hasPrefix("fill_ratios."):
+            let kind = id.replacingOccurrences(of: "fill_ratios.", with: "")
+            switch kind {
+            case "circle": return params.fillRatios.circle
+            case "triangle": return params.fillRatios.triangle
+            case "rectangle": return params.fillRatios.rectangle
+            case "line": return params.fillRatios.line
+            default: return params.fillRatio
+            }
+        default:
+            return 0
+        }
+    }
+
+    private func resolvedRenderParametersForAnimationFrame(_ frame: Int) -> RenderParameters {
+        var resolved = params
+        for track in animation.tracks where track.enabled {
+            let value = valueForTrack(track, atFrame: frame)
+            applyTrackValue(&resolved, trackID: track.id, sampledValue: value)
+        }
+        return resolved
+    }
+
+    private func applyTrackValue(_ target: inout RenderParameters, trackID: String, sampledValue: Double) {
+        switch trackID {
+        case "rotation":
+            target.rotation = min(max(sampledValue, 0), 360)
+        case "stroke_width":
+            target.strokeWidth = min(max(sampledValue, 0.5), 18)
+        case "fill_ratio":
+            target.fillRatio = min(max(sampledValue, 0), 1)
+        case "symmetry":
+            target.symmetry = min(max(Int(round(sampledValue)), 1), 12)
+        case let id where id.hasPrefix("shape_counts."):
+            let kindRaw = id.replacingOccurrences(of: "shape_counts.", with: "")
+            if let kind = ShapeKind(rawValue: kindRaw) {
+                target.shapeCounts[kind] = min(max(Int(round(sampledValue)), 0), 300)
+            }
+        case let id where id.hasPrefix("fill_ratios."):
+            let kindRaw = id.replacingOccurrences(of: "fill_ratios.", with: "")
+            if let kind = ShapeKind(rawValue: kindRaw) {
+                target.fillRatios[kind] = min(max(sampledValue, 0), 1)
+            }
+        case let id where id.hasPrefix("stroke_widths."):
+            let kindRaw = id.replacingOccurrences(of: "stroke_widths.", with: "")
+            if let kind = ShapeKind(rawValue: kindRaw) {
+                target.strokeWidths[kind] = min(max(sampledValue, 0.5), 18)
+            }
+        default:
+            break
+        }
+    }
+
+    private func handleNexusCommand(_ command: NexusCommand) {
+        switch command.type {
+        case .patchRenderParams:
+            if let seed = command.int("seed") { params.seed = seed }
+            if let symmetry = command.int("symmetry") { params.symmetry = min(max(symmetry, 1), 12) }
+            if let symmetryModeRaw = command.payload["symmetry_mode"] as? String,
+               let symmetryMode = SymmetryMode(rawValue: symmetryModeRaw) {
+                params.symmetryMode = symmetryMode
+            }
+            if let rotation = command.double("rotation") { params.rotation = min(max(rotation, 0), 360) }
+            if let stroke = command.double("stroke_width") { params.strokeWidth = min(max(stroke, 0.5), 18) }
+            if let strokeWidths = command.payload["stroke_widths"] as? [String: Any] {
+                if let value = strokeWidths["circle"] as? Double { params.strokeWidths.circle = min(max(value, 0.5), 18) }
+                if let value = strokeWidths["triangle"] as? Double { params.strokeWidths.triangle = min(max(value, 0.5), 18) }
+                if let value = strokeWidths["rectangle"] as? Double { params.strokeWidths.rectangle = min(max(value, 0.5), 18) }
+                if let value = strokeWidths["line"] as? Double { params.strokeWidths.line = min(max(value, 0.5), 18) }
+            }
+            if let fill = command.double("fill_ratio") {
+                params.fillRatio = min(max(fill, 0), 1)
+            }
+            schedulePreview()
+        case .patchCanvas:
+            if let width = command.int("width") { canvas.manualWidth = width }
+            if let height = command.int("height") { canvas.manualHeight = height }
+            if let lockRatio = command.payload["lock_ratio"] as? Bool { canvas.lockRatio = lockRatio }
+            canvas.applyRatioLock()
+            schedulePreview()
+        case .requestPreview:
+            requestPreview()
+        case .requestAnimationPreview:
+            requestAnimationPreview()
+        case .exportBatch:
+            exportBatch()
+        case .exportAnimation:
+            exportAnimation()
+        }
     }
 }

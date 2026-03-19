@@ -1,0 +1,186 @@
+{
+  "generated_at": "2026-03-19T02:13:02Z",
+  "scenarios": [
+    {
+      "height": 512,
+      "metrics": {
+        "circle": {
+          "fill_ratio_delta": 0.050000000000000044,
+          "mean_angle_delta_deg": 69.91290112820391,
+          "mean_size_norm_delta": 0.002121695282050279,
+          "mean_x_norm_delta": 0.041472333873614264,
+          "mean_y_norm_delta": 0.034688313304100216
+        },
+        "line": {
+          "fill_ratio_delta": 0.0,
+          "mean_angle_delta_deg": 42.9983483739546,
+          "mean_size_norm_delta": 0.01108015649567165,
+          "mean_x_norm_delta": 0.0579041329918602,
+          "mean_y_norm_delta": 0.021909604663893578
+        },
+        "rectangle": {
+          "fill_ratio_delta": 0.050000000000000044,
+          "mean_angle_delta_deg": 0.9660717707971855,
+          "mean_size_norm_delta": 0.021856114610066008,
+          "mean_x_norm_delta": 0.10123254469743465,
+          "mean_y_norm_delta": 0.04116382428272025
+        },
+        "triangle": {
+          "fill_ratio_delta": 0.04999999999999993,
+          "mean_angle_delta_deg": 7.590957914810929,
+          "mean_size_norm_delta": 0.004065314158329954,
+          "mean_x_norm_delta": 0.016666240854039338,
+          "mean_y_norm_delta": 0.043721469292616444
+        }
+      },
+      "seed": 42,
+      "statistical_failures": [],
+      "statistical_pass": true,
+      "strict_failures": [],
+      "strict_pass": true,
+      "width": 512
+    },
+    {
+      "height": 1024,
+      "metrics": {
+        "circle": {
+          "fill_ratio_delta": 0.050000000000000044,
+          "mean_angle_delta_deg": 69.91290112820391,
+          "mean_size_norm_delta": 0.034840916000400145,
+          "mean_x_norm_delta": 0.04147234852205184,
+          "mean_y_norm_delta": 0.034688313304100216
+        },
+        "line": {
+          "fill_ratio_delta": 0.0,
+          "mean_angle_delta_deg": 42.9983483739546,
+          "mean_size_norm_delta": 0.027734160033414175,
+          "mean_x_norm_delta": 0.057904157405922696,
+          "mean_y_norm_delta": 0.02190959978108109
+        },
+        "rectangle": {
+          "fill_ratio_delta": 0.050000000000000044,
+          "mean_angle_delta_deg": 0.9660717707971855,
+          "mean_size_norm_delta": 0.01883871515590449,
+          "mean_x_norm_delta": 0.10123252516618464,
+          "mean_y_norm_delta": 0.04116381939990765
+        },
+        "triangle": {
+          "fill_ratio_delta": 0.04999999999999993,
+          "mean_angle_delta_deg": 7.590957914810929,
+          "mean_size_norm_delta": 0.03409357016510246,
+          "mean_x_norm_delta": 0.01666623597122685,
+          "mean_y_norm_delta": 0.04372145952699147
+        }
+      },
+      "seed": 42,
+      "statistical_failures": [],
+      "statistical_pass": true,
+      "strict_failures": [],
+      "strict_pass": true,
+      "width": 1024
+    },
+    {
+      "height": 512,
+      "metrics": {
+        "circle": {
+          "fill_ratio_delta": 0.050000000000000044,
+          "mean_angle_delta_deg": 17.023752747065828,
+          "mean_size_norm_delta": 0.0015203559769250141,
+          "mean_x_norm_delta": 0.007292924883461838,
+          "mean_y_norm_delta": 0.10578881541990098
+        },
+        "line": {
+          "fill_ratio_delta": 0.050000000000000044,
+          "mean_angle_delta_deg": 37.559738622949396,
+          "mean_size_norm_delta": 0.025933798644544197,
+          "mean_x_norm_delta": 0.09611330142355595,
+          "mean_y_norm_delta": 0.06340322407858368
+        },
+        "rectangle": {
+          "fill_ratio_delta": 0.19999999999999996,
+          "mean_angle_delta_deg": 36.13156055246975,
+          "mean_size_norm_delta": 0.020825372800931677,
+          "mean_x_norm_delta": 0.01367246624767765,
+          "mean_y_norm_delta": 0.25268163171952707
+        },
+        "triangle": {
+          "fill_ratio_delta": 0.050000000000000044,
+          "mean_angle_delta_deg": 21.361811489041088,
+          "mean_size_norm_delta": 0.012129884608379396,
+          "mean_x_norm_delta": 0.13634141955180462,
+          "mean_y_norm_delta": 0.14476983564505308
+        }
+      },
+      "seed": 1337,
+      "statistical_failures": [
+        "rectangle mean_y_norm delta 0.2527 > 0.2200"
+      ],
+      "statistical_pass": false,
+      "strict_failures": [],
+      "strict_pass": true,
+      "width": 512
+    },
+    {
+      "height": 1024,
+      "metrics": {
+        "circle": {
+          "fill_ratio_delta": 0.050000000000000044,
+          "mean_angle_delta_deg": 17.023752747065828,
+          "mean_size_norm_delta": 0.03565158423846252,
+          "mean_x_norm_delta": 0.00729292000064935,
+          "mean_y_norm_delta": 0.10578881541990098
+        },
+        "line": {
+          "fill_ratio_delta": 0.050000000000000044,
+          "mean_angle_delta_deg": 37.559738622949396,
+          "mean_size_norm_delta": 0.0130666114199154,
+          "mean_x_norm_delta": 0.09611332095480601,
+          "mean_y_norm_delta": 0.06340322407858368
+        },
+        "rectangle": {
+          "fill_ratio_delta": 0.19999999999999996,
+          "mean_angle_delta_deg": 36.13156055246975,
+          "mean_size_norm_delta": 0.020867933716721666,
+          "mean_x_norm_delta": 0.013672471130490194,
+          "mean_y_norm_delta": 0.252681621953902
+        },
+        "triangle": {
+          "fill_ratio_delta": 0.050000000000000044,
+          "mean_angle_delta_deg": 21.361811489041088,
+          "mean_size_norm_delta": 0.030259120195810313,
+          "mean_x_norm_delta": 0.13634143908305457,
+          "mean_y_norm_delta": 0.14476983564505308
+        }
+      },
+      "seed": 1337,
+      "statistical_failures": [
+        "rectangle mean_y_norm delta 0.2527 > 0.2200"
+      ],
+      "statistical_pass": false,
+      "strict_failures": [],
+      "strict_pass": true,
+      "width": 1024
+    }
+  ],
+  "seeds": [
+    42,
+    1337
+  ],
+  "sizes": [
+    {
+      "height": 512,
+      "width": 512
+    },
+    {
+      "height": 1024,
+      "width": 1024
+    }
+  ],
+  "summary": {
+    "all_statistical_pass": false,
+    "all_strict_pass": true,
+    "failed_scenarios": 2,
+    "passed_scenarios": 2,
+    "total_scenarios": 4
+  }
+}
