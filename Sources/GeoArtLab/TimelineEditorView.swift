@@ -19,7 +19,7 @@ struct TimelineEditorView: View {
             Divider()
             content
         }
-        .frame(minWidth: 1100, minHeight: 760)
+        .frame(minWidth: 1040, minHeight: 680)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             appState.alignTrackEndpointsWithFrameCount()
@@ -41,23 +41,25 @@ struct TimelineEditorView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Button(isPlaying ? "Pause" : "Play") {
                 togglePlayback()
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.small)
 
             Button("Stop") {
                 stopPlayback(resetFrame: true)
             }
             .buttonStyle(.bordered)
+            .controlSize(.small)
 
             Divider().frame(height: 18)
 
             LabeledContent("FPS") {
                 TextField("", value: $appState.animation.fps, format: .number)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 60)
+                    .frame(width: 56)
                     .onSubmit {
                         appState.animation.clamp()
                     }
@@ -67,7 +69,7 @@ struct TimelineEditorView: View {
             LabeledContent("Frames") {
                 TextField("", value: $appState.animation.frameCount, format: .number)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 80)
+                    .frame(width: 72)
                     .onSubmit {
                         appState.animation.clamp()
                         appState.alignTrackEndpointsWithFrameCount()
@@ -77,7 +79,7 @@ struct TimelineEditorView: View {
 
             TextField("Animation Name", text: $appState.animation.animationName)
                 .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 260)
+                .frame(maxWidth: 220)
 
             Spacer()
 
@@ -85,18 +87,21 @@ struct TimelineEditorView: View {
                 appState.exportAnimation()
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.small)
 
             Button("Close") {
                 isPresented = false
             }
             .buttonStyle(.bordered)
+            .controlSize(.small)
             .keyboardShortcut(.cancelAction)
         }
-        .padding(12)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
     private var scrubber: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("Frame \(appState.animation.scrubFrame + 1) / \(max(1, appState.animation.frameCount))")
                     .font(.caption)
@@ -134,11 +139,12 @@ struct TimelineEditorView: View {
                 }
             }
         }
-        .padding(12)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
     private var content: some View {
-        HStack(spacing: 0) {
+        VStack(spacing: 0) {
             tracksList
             Divider()
             selectedProperties
@@ -147,12 +153,13 @@ struct TimelineEditorView: View {
 
     private var tracksList: some View {
         ScrollView {
-            VStack(spacing: 8) {
+            LazyVStack(spacing: 6) {
                 ForEach(appState.animation.tracks.indices, id: \.self) { index in
                     trackRow(index: index)
                 }
             }
-            .padding(12)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
         }
     }
 
@@ -160,12 +167,13 @@ struct TimelineEditorView: View {
         let track = appState.animation.tracks[index]
         let selected = selectedTrackID == track.id
 
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Circle()
                     .fill(colorFromHex(track.colorHex))
-                    .frame(width: 10, height: 10)
+                    .frame(width: 8, height: 8)
                 Toggle(track.title, isOn: trackEnabledBinding(index))
+                    .font(.caption.weight(.semibold))
                 Spacer()
                 Button("Add Key") {
                     selectedTrackID = track.id
@@ -173,6 +181,7 @@ struct TimelineEditorView: View {
                     selectedKeyframeID = appState.animation.tracks[index].keyframes.last?.id
                 }
                 .buttonStyle(.bordered)
+                .controlSize(.small)
             }
 
             TimelineTrackBar(
@@ -187,110 +196,122 @@ struct TimelineEditorView: View {
                     appState.updateKeyframe(trackID: track.id, keyframeID: keyframeID, frame: newFrame)
                 }
             )
-            .frame(height: 34)
+            .frame(height: 22)
         }
-        .padding(10)
-        .background(selected ? Color.orange.opacity(0.14) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(selected ? Color.orange.opacity(0.14) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
         .onTapGesture {
             selectedTrackID = track.id
         }
     }
 
     private var selectedProperties: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Keyframe Properties")
-                .font(.headline)
-
-            if let selectedTrack, let selectedKeyframe {
-                Text(selectedTrack.title)
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Keyframe Properties")
                     .font(.subheadline.weight(.semibold))
 
-                LabeledContent("Frame") {
-                    TextField(
-                        "",
-                        value: Binding(
-                            get: { selectedKeyframe.frame },
-                            set: { appState.updateKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id, frame: $0) }
-                        ),
-                        format: .number
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 80)
-                }
-                .font(.caption)
+                if let selectedTrack, let selectedKeyframe {
+                    HStack(spacing: 10) {
+                        Text(selectedTrack.title)
+                            .font(.caption.weight(.semibold))
 
-                LabeledContent("Value") {
-                    TextField(
-                        "",
-                        value: Binding(
-                            get: { selectedKeyframe.value },
-                            set: { appState.updateKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id, value: $0) }
-                        ),
-                        format: .number.precision(.fractionLength(selectedTrack.isInteger ? 0 : 2))
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 100)
-                }
-                .font(.caption)
-
-                LabeledContent("Easing") {
-                    Picker("", selection: Binding(
-                        get: { selectedKeyframe.interpolation },
-                        set: { appState.updateKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id, interpolation: $0) }
-                    )) {
-                        ForEach(TrackInterpolation.allCases) { interpolation in
-                            Text(interpolation.title).tag(interpolation)
+                        LabeledContent("Frame") {
+                            TextField(
+                                "",
+                                value: Binding(
+                                    get: { selectedKeyframe.frame },
+                                    set: { appState.updateKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id, frame: $0) }
+                                ),
+                                format: .number
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 70)
                         }
+                        .font(.caption)
+
+                        LabeledContent("Value") {
+                            TextField(
+                                "",
+                                value: Binding(
+                                    get: { selectedKeyframe.value },
+                                    set: { appState.updateKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id, value: $0) }
+                                ),
+                                format: .number.precision(.fractionLength(selectedTrack.isInteger ? 0 : 2))
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 96)
+                        }
+                        .font(.caption)
+
+                        LabeledContent("Easing") {
+                            Picker("", selection: Binding(
+                                get: { selectedKeyframe.interpolation },
+                                set: { appState.updateKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id, interpolation: $0) }
+                            )) {
+                                ForEach(TrackInterpolation.allCases) { interpolation in
+                                    Text(interpolation.title).tag(interpolation)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 128)
+                        }
+                        .font(.caption)
+
+                        Button("Duplicate") {
+                            selectedKeyframeID = appState.duplicateKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        Button("Dup To Playhead") {
+                            duplicateSelectedKeyframeToPlayhead()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        Button("Delete") {
+                            appState.deleteKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id)
+                            selectedKeyframeID = appState.animation.tracks.first(where: { $0.id == selectedTrack.id })?.keyframes.first?.id
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
-                    .pickerStyle(.menu)
-                    .frame(width: 140)
-                }
-                .font(.caption)
-
-                HStack(spacing: 8) {
-                    Button("Duplicate") {
-                        selectedKeyframeID = appState.duplicateKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button("Delete") {
-                        appState.deleteKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id)
-                        selectedKeyframeID = appState.animation.tracks.first(where: { $0.id == selectedTrack.id })?.keyframes.first?.id
-                    }
-                    .buttonStyle(.bordered)
-                }
-            } else {
-                Text("Select a track and keyframe.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-
-            Text("Live Preview")
-                .font(.subheadline.weight(.semibold))
-
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.black)
-
-                if let image = appState.animationPreviewImage ?? appState.previewImage {
-                    Image(nsImage: image)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFit()
-                        .padding(8)
                 } else {
-                    Text("No animation preview")
+                    Text("Select a track and keyframe.")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(minHeight: 260)
 
-            Spacer()
+            Spacer(minLength: 0)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Live Preview")
+                    .font(.caption.weight(.semibold))
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.black)
+
+                    if let image = appState.animationPreviewImage ?? appState.previewImage {
+                        Image(nsImage: image)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFit()
+                            .padding(4)
+                    } else {
+                        Text("No preview")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 190, height: 110)
+            }
         }
-        .padding(12)
-        .frame(width: 340)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 140, maxHeight: 140, alignment: .topLeading)
     }
 
     private var selectedTrack: AnimationTrack? {
@@ -385,9 +406,26 @@ struct TimelineEditorView: View {
         }
 
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        let isCommand = modifiers.contains(.command)
+        let isShift = modifiers.contains(.shift)
+        let isOption = modifiers.contains(.option)
 
-        if modifiers.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "d" {
+        if isCommand, isShift, event.charactersIgnoringModifiers?.lowercased() == "d" {
+            duplicateSelectedKeyframeToPlayhead()
+            return nil
+        }
+
+        if isCommand, event.charactersIgnoringModifiers?.lowercased() == "d" {
             duplicateSelectedKeyframe()
+            return nil
+        }
+
+        if isOption, event.keyCode == 123 {
+            nudgeSelectedKeyframe(-1)
+            return nil
+        }
+        if isOption, event.keyCode == 124 {
+            nudgeSelectedKeyframe(1)
             return nil
         }
 
@@ -437,6 +475,24 @@ struct TimelineEditorView: View {
         guard let selectedTrack else { return }
         guard let selectedKeyframe else { return }
         selectedKeyframeID = appState.duplicateKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id)
+    }
+
+    private func duplicateSelectedKeyframeToPlayhead() {
+        guard let selectedTrack else { return }
+        guard let selectedKeyframe else { return }
+        selectedKeyframeID = appState.duplicateKeyframe(
+            trackID: selectedTrack.id,
+            keyframeID: selectedKeyframe.id,
+            targetFrame: appState.animation.scrubFrame
+        )
+    }
+
+    private func nudgeSelectedKeyframe(_ delta: Int) {
+        guard let selectedTrack else { return }
+        guard let selectedKeyframe else { return }
+        let last = max(0, appState.animation.frameCount - 1)
+        let frame = min(max(selectedKeyframe.frame + delta, 0), last)
+        appState.updateKeyframe(trackID: selectedTrack.id, keyframeID: selectedKeyframe.id, frame: frame)
     }
 }
 

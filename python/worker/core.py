@@ -217,6 +217,20 @@ def normalize_fill_ratios(render_params: dict[str, Any], global_fill_ratio: floa
     return normalized
 
 
+def normalize_stroke_widths(render_params: dict[str, Any], global_stroke_width: float) -> dict[str, float]:
+    raw = render_params.get("stroke_widths")
+    if not isinstance(raw, dict):
+        raw = {}
+
+    normalized: dict[str, float] = {}
+    for kind in SHAPE_ORDER:
+        value = raw.get(kind)
+        if value is None:
+            value = raw.get(f"{kind}s")
+        normalized[kind] = clamp_float(value, 0.5, 18.0, global_stroke_width)
+    return normalized
+
+
 def normalize_render_params(render_params: dict[str, Any], seed_override: int | None = None) -> dict[str, Any]:
     palette_colors = parse_palette(render_params)
     seed_source = seed_override if seed_override is not None else render_params.get("seed", 42)
@@ -227,6 +241,8 @@ def normalize_render_params(render_params: dict[str, Any], seed_override: int | 
     canvas_meta = normalize_canvas_meta(render_params)
     fill_ratio = clamp_float(render_params.get("fill_ratio"), 0.0, 1.0, 0.65)
     fill_ratios = normalize_fill_ratios(render_params, fill_ratio)
+    stroke_width = clamp_float(render_params.get("stroke_width"), 0.5, 18.0, 2.0)
+    stroke_widths = normalize_stroke_widths(render_params, stroke_width)
     symmetry_mode_raw = str(render_params.get("symmetry_mode", "radial")).strip().lower()
     symmetry_mode = "none" if symmetry_mode_raw in {"none", "off", "random"} else "radial"
 
@@ -239,7 +255,8 @@ def normalize_render_params(render_params: dict[str, Any], seed_override: int | 
         "symmetry_mode": symmetry_mode,
         "rotation": clamp_float(render_params.get("rotation"), 0.0, 360.0, 0.0),
         "scale_range": clamp_float(render_params.get("scale_range"), 0.1, 1.0, 0.45),
-        "stroke_width": clamp_float(render_params.get("stroke_width"), 0.5, 18.0, 2.0),
+        "stroke_width": stroke_width,
+        "stroke_widths": stroke_widths,
         "fill_ratio": fill_ratio,
         "fill_ratios": fill_ratios,
         "background_style": str(render_params.get("background_style", "paper")),
@@ -339,6 +356,7 @@ def build_scene(render_params: dict[str, Any], canvas: dict[str, Any]) -> dict[s
     fill_ratio_global = params["fill_ratio"]
     fill_ratios = params["fill_ratios"]
     stroke_width = params["stroke_width"]
+    stroke_widths = params.get("stroke_widths", {})
     palette = params["palette_colors"]
     color_mode = params["color_mode"]
 
@@ -361,6 +379,7 @@ def build_scene(render_params: dict[str, Any], canvas: dict[str, Any]) -> dict[s
         angle_max = float(angle_config["max"])
 
         kind_fill_ratio = clamp_float(fill_ratios.get(kind), 0.0, 1.0, fill_ratio_global)
+        kind_stroke_width = clamp_float(stroke_widths.get(kind), 0.5, 18.0, stroke_width)
 
         for _ in range(kind_count):
             base_x = float(rng.uniform(x_min, x_max))
@@ -407,7 +426,7 @@ def build_scene(render_params: dict[str, Any], canvas: dict[str, Any]) -> dict[s
                         "ratio": round(ratio, 4),
                         "color": color,
                         "filled": is_filled,
-                        "stroke_width": stroke_width,
+                        "stroke_width": kind_stroke_width,
                     }
                 )
             base_index += 1
@@ -639,6 +658,7 @@ def build_jbt_document(
             "rotation": render_params["rotation"],
             "scale_range": render_params["scale_range"],
             "stroke_width": render_params["stroke_width"],
+            "stroke_widths": render_params.get("stroke_widths", {}),
             "fill_ratio": render_params["fill_ratio"],
             "fill_ratios": render_params.get("fill_ratios", {}),
             "color_mode": render_params["color_mode"],
@@ -731,6 +751,7 @@ def export_piece(
         "palette_id": scene["params"].get("palette_id", "custom"),
         "shape_counts": scene["params"].get("shape_counts", {}),
         "symmetry_mode": scene["params"].get("symmetry_mode", "radial"),
+        "stroke_widths": scene["params"].get("stroke_widths", {}),
         "fill_ratios": scene["params"].get("fill_ratios", {}),
         "png_path": str(png_path),
         "svg_path": str(svg_path),
@@ -911,6 +932,14 @@ def apply_track_value(render_params: dict[str, Any], parameter_id: str, sampled_
 
     if parameter_id == "stroke_width":
         render_params["stroke_width"] = clamp_float(sampled_value, 0.5, 18.0, 2.0)
+        return
+
+    if parameter_id.startswith("stroke_widths."):
+        kind = parameter_id.split(".", 1)[1]
+        if kind in SHAPE_ORDER:
+            stroke_widths = dict(render_params.get("stroke_widths", {}))
+            stroke_widths[kind] = clamp_float(sampled_value, 0.5, 18.0, stroke_widths.get(kind, render_params.get("stroke_width", 2.0)))
+            render_params["stroke_widths"] = stroke_widths
         return
 
     if parameter_id == "fill_ratio":

@@ -295,6 +295,39 @@ struct ShapeFillRatios: Equatable {
     }
 }
 
+struct ShapeStrokeWidths: Equatable {
+    var circle: Double = 2.0
+    var triangle: Double = 2.0
+    var rectangle: Double = 2.0
+    var line: Double = 2.0
+
+    subscript(_ kind: ShapeKind) -> Double {
+        get {
+            switch kind {
+            case .circle: return circle
+            case .triangle: return triangle
+            case .rectangle: return rectangle
+            case .line: return line
+            }
+        }
+        set {
+            switch kind {
+            case .circle: circle = newValue
+            case .triangle: triangle = newValue
+            case .rectangle: rectangle = newValue
+            case .line: line = newValue
+            }
+        }
+    }
+
+    mutating func setAll(_ value: Double) {
+        circle = value
+        triangle = value
+        rectangle = value
+        line = value
+    }
+}
+
 struct AngleRangeSettings: Equatable {
     var minDeg: Double = 0
     var maxDeg: Double = 360
@@ -472,6 +505,7 @@ struct RenderParameters: Equatable {
     var rotation: Double = 0
     var scaleRange: Double = 0.45
     var strokeWidth: Double = 2
+    var strokeWidths = ShapeStrokeWidths()
     var fillRatio: Double = 0.65
     var fillRatios = ShapeFillRatios()
     var palette: PalettePreset = .synthwave

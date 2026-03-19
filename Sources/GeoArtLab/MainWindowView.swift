@@ -140,6 +140,8 @@ struct MainWindowView: View {
             compactIntField(title: "Seed", value: $appState.params.seed, range: 0...1_000_000)
             compactIntSlider(title: "Symmetry Count", value: $appState.params.symmetry, range: 1...12)
                 .disabled(appState.params.symmetryMode == .none)
+            compactDoubleSlider(title: "Rotation", value: $appState.params.rotation, range: 0...360, step: 1, precision: 0)
+            compactDoubleSlider(title: "Global Stroke", value: $appState.params.strokeWidth, range: 0.5...18, step: 0.1, precision: 2)
             compactPicker("Symmetry Mode", selection: $appState.params.symmetryMode) {
                 ForEach(SymmetryMode.allCases) { mode in
                     Text(mode.title).tag(mode)
@@ -199,6 +201,7 @@ struct MainWindowView: View {
 
             compactIntField(title: "Count", value: shapeCountBinding(selectedShapeKind), range: 0...300)
             compactDoubleSlider(title: "Fill Ratio", value: shapeFillRatioBinding(selectedShapeKind), range: 0...1, step: 0.01, precision: 2)
+            compactDoubleSlider(title: "Stroke Width", value: shapeStrokeWidthBinding(selectedShapeKind), range: 0.5...18, step: 0.1, precision: 2)
             compactDoubleSlider(title: "Angle Min", value: angleBinding(selectedShapeKind, isMin: true), range: 0...360, step: 1, precision: 0)
             compactDoubleSlider(title: "Angle Max", value: angleBinding(selectedShapeKind, isMin: false), range: 0...360, step: 1, precision: 0)
             compactDoubleSlider(title: "Region X Min", value: regionBinding(selectedShapeKind, axis: .xMin), range: 0...1, step: 0.01, precision: 2)
@@ -232,6 +235,11 @@ struct MainWindowView: View {
 
             Button("Apply Global Fill To Shapes") {
                 appState.applyGlobalFillRatioToAllShapes()
+            }
+            .buttonStyle(.bordered)
+
+            Button("Apply Global Stroke To Shapes") {
+                appState.applyGlobalStrokeWidthToAllShapes()
             }
             .buttonStyle(.bordered)
 
@@ -537,6 +545,15 @@ struct MainWindowView: View {
         )
     }
 
+    private func shapeStrokeWidthBinding(_ kind: ShapeKind) -> Binding<Double> {
+        Binding(
+            get: { appState.params.strokeWidths[kind] },
+            set: { newValue in
+                appState.params.strokeWidths[kind] = min(max(newValue, 0.5), 18)
+            }
+        )
+    }
+
     private func angleBinding(_ kind: ShapeKind, isMin: Bool) -> Binding<Double> {
         Binding(
             get: {
@@ -609,6 +626,31 @@ private struct ExportSheetView: View {
                 Text("Exports PNG + SVG + JBT for the configured repeats.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Base Seed")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        TextField("", value: $appState.baseSeed, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 140)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Repeats")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        TextField("", value: $appState.repeats, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 100)
+                            .onChange(of: appState.repeats) { _ in
+                                appState.repeats = min(max(appState.repeats, 1), 5000)
+                            }
+                    }
+
+                    Spacer()
+                }
             } else {
                 Text("Exports PNG frames + animation.jbt.")
                     .font(.caption)

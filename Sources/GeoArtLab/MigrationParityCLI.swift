@@ -1,4 +1,5 @@
 import Foundation
+import Metal
 
 private struct MigrationParityKindSummary: Codable {
     var count: Int
@@ -36,8 +37,46 @@ private struct MigrationParityOutput: Codable {
     }
 }
 
+private struct PreviewBenchmarkEntry: Codable {
+    var totalShapes: Int
+    var averageMs: Double
+    var p95Ms: Double
+    var maxMs: Double
+
+    enum CodingKeys: String, CodingKey {
+        case totalShapes = "total_shapes"
+        case averageMs = "average_ms"
+        case p95Ms = "p95_ms"
+        case maxMs = "max_ms"
+    }
+}
+
+private struct PreviewBenchmarkOutput: Codable {
+    var engine: String
+    var metalAvailable: Bool
+    var deviceName: String
+    var width: Int
+    var height: Int
+    var iterations: Int
+    var entries: [PreviewBenchmarkEntry]
+
+    enum CodingKeys: String, CodingKey {
+        case engine
+        case metalAvailable = "metal_available"
+        case deviceName = "device_name"
+        case width
+        case height
+        case iterations
+        case entries
+    }
+}
+
 enum MigrationParityCLI {
     static func runIfRequested(arguments: [String]) -> Int? {
+        if arguments.contains("--migration-preview-benchmark") {
+            return runPreviewBenchmark(arguments: arguments)
+        }
+
         guard arguments.contains("--migration-parity-sample") else {
             return nil
         }
@@ -93,6 +132,106 @@ enum MigrationParityCLI {
             return defaultValue
         }
         return Int(arguments[idx + 1]) ?? defaultValue
+    }
+
+    private static func parseIntList(arguments: [String], flag: String, defaultValue: [Int]) -> [Int] {
+        guard let idx = arguments.firstIndex(of: flag), idx + 1 < arguments.count else {
+            return defaultValue
+        }
+        let raw = arguments[idx + 1]
+        let values = raw.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        return values.isEmpty ? defaultValue : values
+    }
+
+    private static func runPreviewBenchmark(arguments: [String]) -> Int {
+        let width = min(max(parseInt(arguments: arguments, flag: "--width", defaultValue: 1024), 64), 4096)
+        let height = min(max(parseInt(arguments: arguments, flag: "--height", defaultValue: 1024), 64), 4096)
+        let iterations = min(max(parseInt(arguments: arguments, flag: "--iterations", defaultValue: 5), 1), 50)
+        let shapeTotals = parseIntList(arguments: arguments, flag: "--shape-counts", defaultValue: [200, 500, 1000])
+        let seed = parseInt(arguments: arguments, flag: "--seed", defaultValue: 42)
+        let backend = MetalPreviewBackend()
+
+        guard backend.isAvailable else {
+            fputs("Metal preview backend unavailable on this machine\n", stderr)
+            return 3
+        }
+
+        var canvas = CanvasSettings()
+        canvas.lockRatio = false
+        canvas.manualWidth = width
+        canvas.manualHeight = height
+        canvas.previewMaxDim = 4096
+
+        var params = RenderParameters()
+        params.symmetry = 1
+        params.symmetryMode = .none
+
+        var entries: [PreviewBenchmarkEntry] = []
+        for total in shapeTotals {
+            params.shapeCounts = distributedShapeCounts(total: max(0, total))
+            var timings: [Double] = []
+            for offset in 0..<iterations {
+                params.seed = seed + offset
+                guard let frame = backend.renderPreview(params: params, canvas: canvas, seed: params.seed) else {
+                    continue
+                }
+                timings.append(frame.renderMillis)
+            }
+
+            guard !timings.isEmpty else { continue }
+            let sorted = timings.sorted()
+            let p95Index = min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.95))
+            let average = sorted.reduce(0, +) / Double(sorted.count)
+            entries.append(
+                PreviewBenchmarkEntry(
+                    totalShapes: total,
+                    averageMs: average,
+                    p95Ms: sorted[p95Index],
+                    maxMs: sorted.last ?? average
+                )
+            )
+        }
+
+        let payload = PreviewBenchmarkOutput(
+            engine: "swift_metal_preview_scaffold",
+            metalAvailable: backend.isAvailable,
+            deviceName: MTLCreateSystemDefaultDevice()?.name ?? "unknown",
+            width: width,
+            height: height,
+            iterations: iterations,
+            entries: entries
+        )
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(payload)
+            print("GEOARTLAB_PREVIEW_BENCH_JSON_START")
+            print(String(decoding: data, as: UTF8.self))
+            return 0
+        } catch {
+            fputs("Failed to encode preview benchmark output: \(error)\n", stderr)
+            return 2
+        }
+    }
+
+    private static func distributedShapeCounts(total: Int) -> ShapeCounts {
+        let clamped = max(0, min(total, 1200))
+        let base = clamped / 4
+        var remainder = clamped % 4
+        var counts = ShapeCounts(circle: base, triangle: base, rectangle: base, line: base)
+        if remainder > 0 {
+            counts.circle += 1
+            remainder -= 1
+        }
+        if remainder > 0 {
+            counts.triangle += 1
+            remainder -= 1
+        }
+        if remainder > 0 {
+            counts.rectangle += 1
+        }
+        return counts
     }
 
     private static func summarizeByKind(scene: RenderCoreScene) -> [String: MigrationParityKindSummary] {

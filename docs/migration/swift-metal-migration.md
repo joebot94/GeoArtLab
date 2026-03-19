@@ -58,6 +58,13 @@ Exit criteria:
 - Preview remains stable under rapid control changes.
 - Required baseline metrics captured in status doc.
 
+Internal enable flags:
+- `GEOARTLAB_ENABLE_SWIFT_RENDERER=1`
+- `GEOARTLAB_ENABLE_METAL_PREVIEW=1`
+
+Preview benchmark command:
+- `swift run GeoArtLab --migration-preview-benchmark --width 1024 --height 1024 --iterations 5 --shape-counts 200,500,1000 --seed 42`
+
 ### M3: Export Parity
 Goal: Match current export behavior on Swift path.
 

@@ -23,9 +23,9 @@ M1 parity baseline snapshot (2026-03-19):
 - action: keep reporting this in CI artifacts while thresholds/renderer behavior are refined in M1-M2
 
 ### M2: Metal Preview Backend
-- [ ] Metal preview path behind internal feature flag
+- [x] Metal preview path behind internal feature flag
 - [ ] Coalesced preview cadence and stale response suppression
-- [ ] Baseline preview performance measurements
+- [x] Baseline preview performance measurements
 
 ### M3: Export Parity
 - [ ] Swift static export parity (`PNG + SVG + .jbt` + `index.jbtl`)
@@ -45,12 +45,18 @@ M1 parity baseline snapshot (2026-03-19):
 
 ## Performance Baselines (M1 Max)
 
-### Current Python Baseline (to be measured in-repo)
-- 200 shapes preview FPS: TODO
-- 500 shapes preview FPS: TODO
-- 1000 shapes preview FPS (stress): TODO
+### Current Python Baseline (headless preview benchmark, 2026-03-19)
+- 200 shapes @ 1024x1024: avg 24.57ms, p95 21.90ms, max 36.79ms
+- 500 shapes @ 1024x1024: avg 27.97ms, p95 27.71ms, max 29.68ms
+- 1000 shapes @ 1024x1024: avg 38.21ms, p95 38.83ms, max 39.38ms
 - 2160x1620 static export time: TODO
 - 4K static export time: TODO
+
+### Swift Metal Preview Scaffold Baseline (CLI benchmark, 2026-03-19)
+- Device: Apple M1 Max
+- 200 shapes @ 1024x1024: avg 12.92ms, p95 11.50ms, max 22.19ms
+- 500 shapes @ 1024x1024: avg 20.04ms, p95 20.50ms, max 21.22ms
+- 1000 shapes @ 1024x1024: avg 36.24ms, p95 36.94ms, max 37.94ms
 
 ### Swift/Metal Targets
 - 200 shapes preview: 120fps (required)

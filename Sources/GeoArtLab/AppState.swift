@@ -39,6 +39,7 @@ final class AppState: ObservableObject {
 
     private let client: PythonWorkerClient
     private let nexusBridge: NexusBridgeProtocol
+    private let metalPreviewBackend = MetalPreviewBackend()
     private var previewDebounceTask: Task<Void, Never>?
     private var animationPreviewDebounceTask: Task<Void, Never>?
     private var hasStarted = false
@@ -118,15 +119,19 @@ final class AppState: ObservableObject {
     }
 
     func requestPreview() {
-        // Migration note: Swift renderer path scaffolding exists but preview currently
-        // stays on Python worker until Metal preview path lands.
-        if activeRenderEngine == .swiftCore {
-            statusText = "Swift renderer enabled (preview fallback: python worker)"
+        if activeRenderEngine == .swiftCore, FeatureFlags.metalPreviewEnabled {
+            if let frame = metalPreviewBackend.renderPreview(params: params, canvas: canvas, seed: params.seed) {
+                previewImage = frame.image
+                statusText = "Preview ready (Swift Metal: \(frame.sceneShapeCount) shapes, \(Int(frame.renderMillis))ms)"
+                workerConnected = metalPreviewBackend.isAvailable
+                return
+            }
+            statusText = "Swift Metal preview unavailable, falling back to python worker"
         }
         previewRequestSerial += 1
         let requestSerial = previewRequestSerial
         let payload = previewPayload(seed: params.seed)
-        statusText = "Rendering preview..."
+        statusText = "Rendering preview (python worker)..."
 
         client.sendRequest(type: "render_preview", payload: payload) { [weak self] result in
             switch result {
@@ -164,8 +169,14 @@ final class AppState: ObservableObject {
         if immediate {
             animationPreviewDebounceTask?.cancel()
         }
-        if activeRenderEngine == .swiftCore {
-            statusText = "Swift renderer enabled (animation fallback: python worker)"
+        if activeRenderEngine == .swiftCore, FeatureFlags.metalPreviewEnabled {
+            let frameParams = resolvedRenderParametersForAnimationFrame(animation.scrubFrame)
+            if let frame = metalPreviewBackend.renderPreview(params: frameParams, canvas: canvas, seed: frameParams.seed) {
+                animationPreviewImage = frame.image
+                statusText = "Animation preview (Swift Metal) frame \(animation.scrubFrame + 1)"
+                return
+            }
+            statusText = "Swift Metal animation preview unavailable, falling back to python worker"
         }
         animationPreviewRequestSerial += 1
         let requestSerial = animationPreviewRequestSerial
@@ -323,6 +334,10 @@ final class AppState: ObservableObject {
 
     func applyGlobalFillRatioToAllShapes() {
         params.fillRatios.setAll(params.fillRatio)
+    }
+
+    func applyGlobalStrokeWidthToAllShapes() {
+        params.strokeWidths.setAll(params.strokeWidth)
     }
 
     func randomizeSeed() {
@@ -484,12 +499,13 @@ final class AppState: ObservableObject {
     }
 
     @discardableResult
-    func duplicateKeyframe(trackID: String, keyframeID: UUID) -> UUID? {
+    func duplicateKeyframe(trackID: String, keyframeID: UUID, targetFrame: Int? = nil) -> UUID? {
         guard let trackIndex = animation.tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
         guard let source = animation.tracks[trackIndex].keyframes.first(where: { $0.id == keyframeID }) else { return nil }
         let lastFrame = max(0, animation.frameCount - 1)
+        let resolvedTargetFrame = targetFrame ?? (source.frame + 1)
         let duplicated = TimelineKeyframe(
-            frame: min(source.frame + 1, lastFrame),
+            frame: min(max(resolvedTargetFrame, 0), lastFrame),
             value: source.value,
             interpolation: source.interpolation
         )
@@ -617,6 +633,12 @@ final class AppState: ObservableObject {
             "rotation": params.rotation,
             "scale_range": params.scaleRange,
             "stroke_width": params.strokeWidth,
+            "stroke_widths": [
+                "circle": max(0.5, min(params.strokeWidths.circle, 18)),
+                "triangle": max(0.5, min(params.strokeWidths.triangle, 18)),
+                "rectangle": max(0.5, min(params.strokeWidths.rectangle, 18)),
+                "line": max(0.5, min(params.strokeWidths.line, 18)),
+            ],
             "fill_ratio": params.fillRatio,
             "fill_ratios": [
                 "circle": max(0, min(params.fillRatios.circle, 1)),
@@ -816,6 +838,45 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func resolvedRenderParametersForAnimationFrame(_ frame: Int) -> RenderParameters {
+        var resolved = params
+        for track in animation.tracks where track.enabled {
+            let value = valueForTrack(track, atFrame: frame)
+            applyTrackValue(&resolved, trackID: track.id, sampledValue: value)
+        }
+        return resolved
+    }
+
+    private func applyTrackValue(_ target: inout RenderParameters, trackID: String, sampledValue: Double) {
+        switch trackID {
+        case "rotation":
+            target.rotation = min(max(sampledValue, 0), 360)
+        case "stroke_width":
+            target.strokeWidth = min(max(sampledValue, 0.5), 18)
+        case "fill_ratio":
+            target.fillRatio = min(max(sampledValue, 0), 1)
+        case "symmetry":
+            target.symmetry = min(max(Int(round(sampledValue)), 1), 12)
+        case let id where id.hasPrefix("shape_counts."):
+            let kindRaw = id.replacingOccurrences(of: "shape_counts.", with: "")
+            if let kind = ShapeKind(rawValue: kindRaw) {
+                target.shapeCounts[kind] = min(max(Int(round(sampledValue)), 0), 300)
+            }
+        case let id where id.hasPrefix("fill_ratios."):
+            let kindRaw = id.replacingOccurrences(of: "fill_ratios.", with: "")
+            if let kind = ShapeKind(rawValue: kindRaw) {
+                target.fillRatios[kind] = min(max(sampledValue, 0), 1)
+            }
+        case let id where id.hasPrefix("stroke_widths."):
+            let kindRaw = id.replacingOccurrences(of: "stroke_widths.", with: "")
+            if let kind = ShapeKind(rawValue: kindRaw) {
+                target.strokeWidths[kind] = min(max(sampledValue, 0.5), 18)
+            }
+        default:
+            break
+        }
+    }
+
     private func handleNexusCommand(_ command: NexusCommand) {
         switch command.type {
         case .patchRenderParams:
@@ -827,6 +888,12 @@ final class AppState: ObservableObject {
             }
             if let rotation = command.double("rotation") { params.rotation = min(max(rotation, 0), 360) }
             if let stroke = command.double("stroke_width") { params.strokeWidth = min(max(stroke, 0.5), 18) }
+            if let strokeWidths = command.payload["stroke_widths"] as? [String: Any] {
+                if let value = strokeWidths["circle"] as? Double { params.strokeWidths.circle = min(max(value, 0.5), 18) }
+                if let value = strokeWidths["triangle"] as? Double { params.strokeWidths.triangle = min(max(value, 0.5), 18) }
+                if let value = strokeWidths["rectangle"] as? Double { params.strokeWidths.rectangle = min(max(value, 0.5), 18) }
+                if let value = strokeWidths["line"] as? Double { params.strokeWidths.line = min(max(value, 0.5), 18) }
+            }
             if let fill = command.double("fill_ratio") {
                 params.fillRatio = min(max(fill, 0), 1)
             }

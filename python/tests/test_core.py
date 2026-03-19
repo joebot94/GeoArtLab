@@ -27,6 +27,7 @@ class CoreTests(unittest.TestCase):
             "rotation": 0,
             "scale_range": 0.4,
             "stroke_width": 2,
+            "stroke_widths": {"circle": 1.0, "triangle": 2.5, "rectangle": 4.0, "line": 7.0},
             "fill_ratio": 0.65,
             "fill_ratios": {"circle": 1.0, "triangle": 0.8, "rectangle": 0.4, "line": 0.0},
             "palette_id": "synthwave",
@@ -143,6 +144,12 @@ class CoreTests(unittest.TestCase):
             if shape["kind"] == "line":
                 self.assertFalse(shape["filled"])
 
+    def test_per_shape_stroke_widths_enforced(self) -> None:
+        scene = core.build_scene(self.render, self.canvas)
+        expected = self.render["stroke_widths"]
+        for shape in scene["shapes"]:
+            self.assertAlmostEqual(shape["stroke_width"], expected[shape["kind"]], delta=1e-6)
+
     def test_new_color_modes_and_backgrounds(self) -> None:
         palette = self.render["palette_colors"]
         for color_mode in ["palette_lock", "palette_rotate_per_ring", "seed_derived_index"]:
@@ -198,6 +205,7 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(jbt["payload"].get("render_engine"), "python")
                 self.assertIn("shape_counts", jbt["payload"]["parameters"])
                 self.assertIn("symmetry_mode", jbt["payload"]["parameters"])
+                self.assertIn("stroke_widths", jbt["payload"]["parameters"])
                 self.assertIn("fill_ratios", jbt["payload"]["parameters"])
                 self.assertIn("angle_ranges_deg", jbt["payload"]["parameters"])
                 self.assertIn("placement_regions", jbt["payload"]["parameters"])
